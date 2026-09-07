@@ -151,19 +151,53 @@ Public-facing: upload for feedback/views. No new features land here.
 ### `main` — INV.OS the product (the exe)
 Single Go binary. Embeds the UI, owns a real SQLite database, serves itself on the
 LAN so shop tablets/phones hit the same inventory. Same codebase becomes the SaaS.
-- [ ] P1 scaffold: go:embed UI, SQLite schema (relational, not blob), REST API
-- [x] P2 port the UI off the in-memory JSON blob onto the API (the RAM fix)  DONE v21.1
-      core loop ported; see P5-P7 for what is still gated off
-- [ ] P3 legacy import: read a v20.2 browser export / invos.db straight in
-- [x] P4 stress test: 100k items — RAM ceiling, query latency  DONE v21.0
-- [ ] P5 LAN mode: bind 0.0.0.0, device discovery, concurrent-edit behavior
-- [ ] P6 packaging: signed .exe, Linux + Pi builds, one-command install
-- [x] P5 projects / BOM: store+API writes, un-gated project/build/pick  DONE v21.2
-- [x] P6 cycle count  DONE v22.0
-- [x] P7 spreadsheet import  DONE v22.0
-- [x] P8 photos in the database  DONE v22.0
-- [ ] P9 SaaS: multi-tenant behind the same Store interface (Postgres driver swap)
 
+DONE — the port is finished; the exe is at full feature parity with the HTML build.
+- [x] P1 scaffold: go:embed UI, SQLite schema (relational, not blob), REST API   v21.0
+- [x] P2 port the UI off the in-memory JSON blob onto the API (the RAM fix)      v21.1
+- [x] P3 stress test: 100k items — RAM flat, search 2ms, home 0ms                v21.0
+- [x] P4 projects / BOM in the database                                          v21.2
+- [x] P5 cycle count · P6 spreadsheet import · P7 photos                         v22.0
+- [x] P8 galaxy + orbit as settings (deletes the no-galaxy fork)                  v22.1
+- [x] UI end-to-end test harness (test/ui/smoke.mjs) — 66 checks
+
+★ NEXT — nothing here is a port; it is all "make it shippable".
+
+### P9 — legacy import  ★ recommended next (small, unblocks real use)
+Existing data is stranded in the HTML build's localStorage. Until this exists, nobody
+(including us) can move a real inventory onto the exe.
+- [ ] read a v20.2 browser export (the JSON the old `export`/`backup` produced)
+- [ ] read an old physical invos.db written by the sql.js mirror
+- [ ] `import legacy <file>` — map old fields, keep original C-IDs, one undo step
+- [ ] round-trip test: old export in, item/bin/qty/project counts match
+
+### P10 — packaging (you cannot sell an unpackaged exe)
+- [ ] version stamping (-ldflags) + `invos -version` in releases, not "dev"
+- [ ] cross-builds: windows/amd64, linux/amd64, linux/arm64 (Pi)
+- [ ] code signing for Windows, so it does not trip SmartScreen
+- [ ] REWRITE kiosk/install.sh + update.sh — they still copy index.html and run
+      `python3 -m http.server`, which is the old static-folder model. The exe replaces
+      both: one systemd unit running `invos -lan`, no python, no file copying.
+- [ ] one-command install for a shop box; auto-start on boot
+
+### P11 — LAN for real
+`-lan` works and prints the URLs, but it has only been exercised by two browser tabs
+on localhost. Before promising it to a shop:
+- [ ] two real devices editing at once — concurrent-edit behaviour, stale views
+- [ ] what a tablet sees when the server goes away mid-edit
+- [ ] make the frames stop when idle (the graph redraws every frame because of drift;
+      real battery cost on a tablet) — see NOTES v22.1
+- [ ] optional: mDNS/discovery so a phone finds the station without typing an IP
+
+### P12 — SaaS
+- [ ] multi-tenant behind the same Store interface (Postgres driver swap)
 Postgres is NOT planned for the shop product — SQLite handles the volume a shop will
 ever reach. It comes in only if/when SaaS multi-tenancy needs it, which is why all
 data access sits behind one Store interface from day one.
+
+### Still open from the original feature roadmap (Phases B/C above)
+Not port work — genuinely new capability, in rough value order:
+- [ ] B1 check-out / check-in custody (who has the tool, where is it now)
+- [ ] B3 suppliers + reorder points -> a real buy list grouped by supplier
+- [ ] C1 scanning as a MODE (scan -> take / stock / count), USB wedge scanners
+- [ ] A3 reporting: most-taken, stale stock, consumption rate, valuation
