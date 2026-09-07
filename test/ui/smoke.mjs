@@ -424,6 +424,40 @@ async function runChecks(page, t, consoleErrors) {
   check('rollback lists reversible steps', /ROLLBACK/i.test(await t.screen()));
   await t.key('Escape');
 
+  // ── the graph actually draws the inventory ───────────────────────────────
+  // This one shipped broken: the inventory graph fetched its parts only from a SAVE,
+  // so opening it fresh drew the sun and nothing else. Checking node counts rather
+  // than "did it render" is what catches that — an empty graph still renders.
+  console.log(String.fromCharCode(10) + 'graph contents');
+
+  const dbItems = (await api.get('/api/stats')).items;
+  await t.run('graph inv');
+  await page.waitForTimeout(800);
+  const invNodes = await page.evaluate(() =>
+    gNodes.reduce((m, n) => (m[n.type] = (m[n.type] || 0) + 1, m), {}));
+  check('the sections graph draws a node per item',
+    invNodes.part === dbItems, `${invNodes.part} part nodes for ${dbItems} items`);
+  check('the sections graph draws its shelves',
+    invNodes.dept > 0 && invNodes.sec > 0, JSON.stringify(invNodes));
+
+  await t.run('graph galaxy');
+  await page.waitForTimeout(500);
+  const galNodes = await page.evaluate(() =>
+    gNodes.reduce((m, n) => (m[n.type] = (m[n.type] || 0) + 1, m), {}));
+  check('the galaxy draws project cores and their parts',
+    galNodes.proj > 0 && (galNodes.part > 0 || galNodes.shared > 0),
+    JSON.stringify(galNodes));
+
+  // adding an item must show up in the graph without a reload
+  await t.run('add graph canary x1 @4110');
+  await page.waitForTimeout(600);
+  await t.run('graph inv');
+  await page.waitForTimeout(800);
+  const partsAfterAdd = await page.evaluate(() => gNodes.filter(n => n.type === 'part').length);
+  check('a new item appears in the graph', partsAfterAdd === dbItems + 1,
+    `${partsAfterAdd} part nodes, expected ${dbItems + 1}`);
+  await t.key('Escape');
+
   // ── galaxy and orbit are settings, not forks ──────────────────────────────
   // The repo used to carry a whole second copy of the app with the galaxy removed.
   // These checks are what let that fork be deleted: one setting has to neutralise

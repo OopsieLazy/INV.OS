@@ -1612,3 +1612,35 @@ Roadmap item, not a silent gap.
 77 UI checks (11 new): shop access starts closed, `lan on` opens it and reports a real
 LAN address, the station answers on that address, the local connection is unaffected
 either way, `lan off` closes it, and the network address genuinely stops answering.
+
+---
+
+# v22.3 — the sections graph was drawing nothing
+
+## The bug
+Open the graph on the inventory ("sections") view and it showed the central sun and
+nothing else — no departments, no shelves, no parts — even with the demo loaded.
+
+`buildGraphData` reads `graphItems`, the graph's own bounded sample of the inventory
+(added in v21.3, because `state.items` is only the rows on screen and a force
+simulation over 100k nodes is not a thing anyone can look at). But the only thing that
+ever FILLED `graphItems` was `graphSync()`, and `graphSync()` only runs after a save.
+So the first time the graph opened it had an empty array and faithfully drew an empty
+graph. Adding an item made it appear, which is why it looked intermittent rather than
+broken.
+
+## The fix
+`ensureGraphItems()` — `buildGraphData` is synchronous and called from a dozen places
+(view switches, HUD buttons, the physics loop), so it cannot await. It now asks for the
+data on first use and rebuilds itself when it lands, re-heating the layout so the new
+nodes settle. `graphSync()` invalidates the sample after a mutation.
+
+## Why the tests missed it
+The orbit checks asserted on the GALAXY view, which builds from `state.projects` — a
+different data path that was never broken. Nothing asserted on the inventory graph's
+contents, and "the page rendered" is not a useful assertion: an empty graph renders
+perfectly well.
+
+Now checked by node COUNTS: one part node per item in the database, departments and
+shelves present, the galaxy's project cores and their parts, and a newly added item
+appearing without a reload. 81 UI checks.

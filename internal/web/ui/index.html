@@ -3106,11 +3106,34 @@ async function exec(line){
    showing a sample. */
 const GRAPH_ITEM_CAP = 1500;
 let graphItems = [], graphItemsTotal = 0;
+let graphItemsLoaded = false, graphItemsLoading = false;
+
 async function refreshGraphItems(){
   try {
     const page = await DB.peek({limit:GRAPH_ITEM_CAP, sort:"bin"});
     graphItems = page.rows; graphItemsTotal = page.total;
+    graphItemsLoaded = true;
   } catch(e){ graphItems = []; graphItemsTotal = 0; }
+}
+
+/* ensureGraphItems fetches the graph's parts the first time they are needed.
+   buildGraphData is synchronous and called from a dozen places (view switches, the
+   HUD buttons, the physics loop), so it cannot await — it asks for the data and
+   rebuilds itself once it lands. Without this the inventory graph drew its sun and
+   nothing else, because the only thing that ever fetched was a save. */
+function ensureGraphItems(){
+  if (graphItemsLoaded || graphItemsLoading) return;
+  graphItemsLoading = true;
+  refreshGraphItems()
+    .then(()=>{
+      graphItemsLoading = false;
+      if (graphMode!=="off"){
+        buildGraphData(); updateGLabel();
+        gAlpha = Math.max(gAlpha, 0.6);   // re-heat so the new nodes lay themselves out
+        if (!gRAF) gTick();
+      }
+    })
+    .catch(()=>{ graphItemsLoading = false; });
 }
 let graphMode="off", gNodes=[], gEdges=[], gAlpha=0, gRAF=null;
 let gView={kind:"inv"};
@@ -3184,6 +3207,7 @@ function buildGraphData(){
   const addE=(a,b,w=1)=>{ const k=a+"|"+b; if(eset.has(k))return; eset.add(k); edges.push({a,b,w}); };
 
   if (gView.kind==="inv"){
+    ensureGraphItems();   // first open has nothing yet; it repaints when it arrives
     /* central "sun": every department orbits SECTIONS */
     const sun=addN("SUN","sun","SECTIONS",{cmd:"home", count:graphItemsTotal});
     sun.x=0; sun.y=0; sun.z=0;                 // anchor at the origin
@@ -3665,6 +3689,7 @@ function graphHome(){          // recenter camera / view — the auto-home
 }
 async function graphSync(){
   if (graphMode==="off") return;
+  graphItemsLoaded = false;   // the inventory changed; re-read the graph's sample
   await Promise.all([refreshGraphItems(), gView.kind==="inv" ? null : loadProjects()]);
   buildGraphData(); updateGLabel();
 }
