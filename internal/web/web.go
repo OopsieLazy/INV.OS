@@ -5,7 +5,9 @@
 package web
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 )
@@ -38,3 +40,22 @@ func noCache(h http.Handler) http.Handler {
 		h.ServeHTTP(w, r)
 	})
 }
+
+// buildID is a short fingerprint of the UI this binary carries. It changes whenever the
+// UI changes, without anyone having to remember to bump a version.
+//
+// It exists because "am I looking at the new build?" cost real debugging time twice: a
+// page that is already open does not reload itself when the server behind it is
+// replaced, so a fixed bug looks unfixed. The app compares this against the server's
+// value and says so.
+var buildID = func() string {
+	data, err := files.ReadFile("ui/index.html")
+	if err != nil {
+		return "unknown"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:4])
+}()
+
+// BuildID returns the fingerprint of the embedded UI.
+func BuildID() string { return buildID }

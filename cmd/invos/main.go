@@ -76,7 +76,7 @@ func run() error {
 	// The app's `server` screen shows where this station is reachable, so the info
 	// the flags decided is handed to the API layer rather than guessed at there.
 	api.Info = api.ServerInfo{
-		Version: version, Port: *port, StartedAt: time.Now().UnixMilli(),
+		Version: version, Build: web.BuildID(), Port: *port, StartedAt: time.Now().UnixMilli(),
 	}
 
 	// The station's own listener is always loopback and always up, so toggling shop

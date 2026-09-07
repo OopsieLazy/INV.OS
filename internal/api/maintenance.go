@@ -322,7 +322,10 @@ func (s *Server) downloadDB(w http.ResponseWriter, r *http.Request) {
 // ServerInfo describes this running station: where it listens, where its data is, and
 // what a phone on the same network should type in to reach it.
 type ServerInfo struct {
-	Version   string   `json:"version"`
+	Version string `json:"version"`
+	// Build fingerprints the UI this server is serving. A page compares it against
+	// the one it loaded with and tells the user when they have gone out of date.
+	Build     string   `json:"build"`
 	DBPath    string   `json:"dbPath"`
 	DBBytes   int64    `json:"dbBytes"`
 	Port      int      `json:"port"`

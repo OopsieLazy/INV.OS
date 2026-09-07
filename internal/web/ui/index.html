@@ -559,10 +559,34 @@ async function loadAll(what){
 /* Cached server info, so the titlebar can show shop-access state without asking on
    every repaint. Refreshed on boot and whenever the switch is thrown. */
 let serverInfo = null;
+/* The build this PAGE was loaded from. An open page does not reload itself when the
+   server behind it is replaced, so after an update the app on screen is the OLD one —
+   which looks exactly like "the fix did not work". The page remembers what it loaded
+   with and notices when the server has moved on. */
+let loadedBuild = null;
+let updateReady = false;
+
 async function refreshServerInfo(){
-  try { serverInfo = await DB.serverInfo(); }catch(e){}
+  try {
+    serverInfo = await DB.serverInfo();
+    if (serverInfo && serverInfo.build){
+      if (loadedBuild === null) loadedBuild = serverInfo.build;
+      else if (serverInfo.build !== loadedBuild && !updateReady){
+        updateReady = true;
+        updateBadge();
+        print("","d");
+        print("a newer build of INV.OS is running on the server — this window is still","a");
+        print("showing the previous one. reload to pick it up:  ctrl+R  (or click ⟳ update)","a");
+      }
+    }
+  }catch(e){}
   return serverInfo;
 }
+
+/* Check periodically and whenever the window is focused again, which is exactly when
+   someone has come back after an update. */
+addEventListener("focus", ()=>{ if(!updateReady) refreshServerInfo(); });
+setInterval(()=>{ if(!updateReady) refreshServerInfo(); }, 30000);
 
 /* cached summary so the title bar and home screen do not re-query constantly */
 let summary = {items:0, pieces:0, bins:0, low:0, projects:0, log:0, dbBytes:0};
@@ -2070,7 +2094,10 @@ async function exec(line){
       { const days = state.lastExport ? Math.round((Date.now()-state.lastExport)/864e5) : null;
         print("  "+dot(days!==null && days<=14)+"off-machine copy "+(days===null?"never — run export/backup":days+" days ago"),(days!==null&&days<=14)?"g":"a"); }
       print("");
-      print(`  ${state.items.length} items · ${state.projects.length} projects · schema v${SCHEMA}`,"d");
+      print(`  ${summary.items} items · ${state.projects.length} projects · schema v${SCHEMA}`,"d");
+      { const srv=serverInfo&&serverInfo.build;
+        print(`  build     page ${loadedBuild||"?"} · server ${srv||"?"}`
+          + (updateReady?"   ⟳ RELOAD to pick up the newer build":""), updateReady?"a":"d"); }
       print("  commands: rollback (undo a bad state) · export · backup","d");
       return;
     }
@@ -4635,6 +4662,7 @@ function updateBadge(){
       + (stale && !backupHandle ? `<span class="warnpill" id="pbak" title="last backup is old">⁂ backup</span>` : ``)
       + (!lastSaveOk ? `<span class="warnpill" id="phealth" title="save failed — open health">⚠ save</span>` : ``)
       + (n ? `<span class="warnpill" id="pdoc" title="doctor report (F2)">▲ ${n}</span>` : ``)
+      + (updateReady ? `<span class="warnpill" id="pupd" title="the server is running a newer build — click to reload">⟳ update</span>` : ``)
       + (lanOn ? `<span class="warnpill" id="plan" title="shop access is ON — other devices can reach this inventory">◉ shop</span>` : ``)
       + `<span class="barbtn" id="pgraph" title="node graph (F3)">graph</span>`
       + `<span class="barbtn" id="ptheme" title="theme &amp; display">theme</span>`
@@ -4648,6 +4676,7 @@ barr.addEventListener("click", async e=>{
   if (id==="pinst")  return void await run("install");
   if (id==="pbak")   return void await run("backup");
   if (id==="ptheme") return void await run("theme");
+  if (id==="pupd")   return void location.reload();
   if (id==="plan")   return void await run("server");
   if (id==="pgraph") return void await run("graph 3d");
   if (id==="pset")   return void await run("settings");

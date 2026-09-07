@@ -1711,3 +1711,32 @@ Verified with real mouse input rather than by calling functions: press and hold,
 positions across several frames, require no movement; release, sample again, require
 movement; and drag a node, then require its orbital radius to have changed instead of
 reverting. 84 UI checks.
+
+---
+
+# v22.6 — the app tells you when the window is out of date
+
+## Why
+Twice now a shipped fix looked broken because the window on screen was still running
+the previous build. A loaded page does not reload itself when the server behind it is
+replaced, so after a rebuild the app in front of you is the OLD one — which is
+indistinguishable from "the fix did not work". That cost two rounds of debugging on the
+orbit-freeze change alone, and it will cost a shop the same when a station is updated.
+
+## What
+`web.BuildID()` is a short SHA-256 of the embedded index.html, so it changes whenever
+the UI changes with nobody having to remember to bump a version. It is reported by
+`/api/server`.
+
+The page records the build it loaded with, then re-checks on window focus and every 30s.
+If the server has moved on it says so in the terminal and puts a `⟳ update` pill in the
+title bar that reloads on click. `health` shows both: `build  page a1b2c3d4 · server e5f6…`.
+
+Checking on FOCUS is the important part — that is exactly the moment someone comes back
+to the window after an update happened behind it.
+
+## Verified
+`test/ui/update-notice.mjs` — open a window, rebuild the UI under it, and require the
+open window to notice by itself, say so on screen, show the pill, and clear the notice
+after a reload. 7 checks. Also confirmed a UI change actually produces a different
+build id, so the mechanism cannot silently no-op.
