@@ -152,12 +152,17 @@ Public-facing: upload for feedback/views. No new features land here.
 Single Go binary. Embeds the UI, owns a real SQLite database, serves itself on the
 LAN so shop tablets/phones hit the same inventory. Same codebase becomes the SaaS.
 - [ ] P1 scaffold: go:embed UI, SQLite schema (relational, not blob), REST API
-- [ ] P2 port the UI off the in-memory JSON blob onto the API (the RAM fix)
+- [x] P2 port the UI off the in-memory JSON blob onto the API (the RAM fix)  DONE v21.1
+      core loop ported; see P5-P7 for what is still gated off
 - [ ] P3 legacy import: read a v20.2 browser export / invos.db straight in
-- [ ] P4 stress test: 100k items / 500 projects — RAM ceiling, query latency, startup
+- [x] P4 stress test: 100k items — RAM ceiling, query latency  DONE v21.0
 - [ ] P5 LAN mode: bind 0.0.0.0, device discovery, concurrent-edit behavior
 - [ ] P6 packaging: signed .exe, Linux + Pi builds, one-command install
-- [ ] P7 SaaS: multi-tenant behind the same Store interface (Postgres driver swap)
+- [ ] P5 projects / BOM: store+API writes, then un-gate project, build, pick
+- [ ] P6 cycle count: move counted/countlog into the database, un-gate `count`
+- [ ] P7 spreadsheet import: wire the wizard to POST /api/items/bulk (endpoint exists)
+- [ ] P8 photos: move from per-browser IndexedDB into the database
+- [ ] P9 SaaS: multi-tenant behind the same Store interface (Postgres driver swap)
 
 Postgres is NOT planned for the shop product — SQLite handles the volume a shop will
 ever reach. It comes in only if/when SaaS multi-tenancy needs it, which is why all

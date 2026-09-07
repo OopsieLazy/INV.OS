@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/items", s.listItems)
 	mux.HandleFunc("POST /api/items", s.addItem)
+	mux.HandleFunc("POST /api/items/bulk", s.bulkAdd)
 	mux.HandleFunc("GET /api/items/{cid}", s.getItem)
 	mux.HandleFunc("PATCH /api/items/{cid}", s.patchItem)
 	mux.HandleFunc("DELETE /api/items/{cid}", s.deleteItem)
@@ -242,6 +243,39 @@ func (s *Server) addItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// bulkAdd takes a whole spreadsheet (or the demo seed) in one request. It is a single
+// transaction and a single undo step, so a bad import backs out in one action.
+func (s *Server) bulkAdd(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Source string       `json:"source"`
+		Items  []store.Item `json:"items"`
+	}
+	// A spreadsheet import is far larger than a normal request, so this route gets its
+	// own body limit rather than the shared 1MB one.
+	defer r.Body.Close()
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 64<<20))
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	for i, it := range body.Items {
+		if strings.TrimSpace(it.Name) == "" {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("row %d has no name", i+1))
+			return
+		}
+		if it.Bin < 0 || it.Bin > 9999 {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("row %d has bin %d, must be 4 digits", i+1, it.Bin))
+			return
+		}
+	}
+	n, err := s.st.BulkAdd(r.Context(), body.Items, body.Source)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]int{"added": n})
 }
 
 func (s *Server) patchItem(w http.ResponseWriter, r *http.Request) {

@@ -379,6 +379,109 @@ const store = {
   }
 };
 
+/* ── SERVER DATA LAYER (the exe) ────────────────────────────────
+   The app used to keep the WHOLE inventory in memory as one JSON blob and
+   rewrite all of it on every change. That is what broke at volume, so it is
+   gone: the Go binary owns the database and answers bounded queries.
+
+   `state.items` is no longer the inventory. It is only the rows CURRENTLY ON
+   SCREEN — a window. Anything that needs the whole truth (counts, search,
+   duplicate checks) must ask the server through DB, never scan state.items.
+   DB.viewComplete says whether the window happens to hold everything, and
+   commands that cannot work on a partial window check it and say so rather
+   than silently acting on 200 of 40,000 rows. ── */
+const DB = {
+  base: "",
+  async req(method, path, body){
+    const opt = {method, headers:{}};
+    if (body !== undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
+    const r = await fetch(this.base + path, opt);
+    if (r.status === 204) return null;
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch(e){ throw new Error("bad response from server"); }
+    if (!r.ok) throw new Error((data && data.error) || ("server error " + r.status));
+    return data;
+  },
+  get(p){ return this.req("GET", p); },
+  post(p,b){ return this.req("POST", p, b===undefined?{}:b); },
+  patch(p,b){ return this.req("PATCH", p, b); },
+  put(p,b){ return this.req("PUT", p, b); },
+  del(p){ return this.req("DELETE", p); },
+
+  /* items -------------------------------------------------------------- */
+  qs(o){
+    const u = new URLSearchParams();
+    for (const [k,v] of Object.entries(o)) if (v!==undefined && v!==null && v!=="") u.set(k,v);
+    const s = u.toString();
+    return s ? "?"+s : "";
+  },
+  // Returns {rows,total,capped} AND parks the rows in the view window so the
+  // existing rendering code keeps working unchanged.
+  async items(opts){
+    const page = await this.get("/api/items"+this.qs(opts));
+    setView(page.rows, page.total);
+    return page;
+  },
+  // A read that must NOT disturb what is on screen (lookups, dup checks).
+  peek(opts){ return this.get("/api/items"+this.qs(opts)); },
+  item(cid){ return this.get("/api/items/"+cid); },
+  add(item){ return this.post("/api/items", item); },
+  bulk(items, source){ return this.post("/api/items/bulk", {items, source}); },
+  edit(cid, patch){ return this.patch("/api/items/"+cid, patch); },
+  remove(cid){ return this.del("/api/items/"+cid); },
+  adjust(cid, delta){ return this.post("/api/items/"+cid+"/qty", {delta}); },
+  nextBin(dept, sec){ return this.get(`/api/bins/next?dept=${dept}&sec=${sec}`); },
+
+  /* layout / summary ---------------------------------------------------- */
+  depts(){ return this.get("/api/depts"); },
+  sections(dept){ return this.get("/api/sections"+(dept>=0?"?dept="+dept:"")); },
+  setDept(n,label){ return this.put("/api/depts/"+n,{label}); },
+  setSection(code,label){ return this.put("/api/sections/"+code,{label}); },
+  stats(){ return this.get("/api/stats"); },
+  log(limit){ return this.get("/api/log?limit="+(limit||20)); },
+  undo(){ return this.post("/api/undo"); },
+  meta(k){ return this.get("/api/meta/"+encodeURIComponent(k)); },
+  setMeta(k,value){ return this.put("/api/meta/"+encodeURIComponent(k), {value}); },
+
+  viewComplete: true,   // does state.items currently hold every matching row?
+};
+
+/* setView installs a result page as the on-screen window. */
+function setView(rows, total){
+  state.items = rows || [];
+  DB.viewComplete = (total === undefined) || (state.items.length >= total);
+  return state.items;
+}
+
+/* notPorted refuses a command whose data would go nowhere. These features still
+   write to the old in-memory state, which is no longer persisted now that the
+   database is the system of record — so accepting the input would silently lose
+   the user's work on the next reload. Refusing is the honest behavior until each
+   one is moved onto the API. */
+function notPorted(what, next){
+  print(`${what} is not connected to the database yet.`,"a");
+  print(`  Everything it recorded would be lost on the next reload, so it is`,"d");
+  print(`  switched off rather than pretending to work.${next?"  "+next:""}`,"d");
+  return true;
+}
+
+/* needsAll guards a command that cannot honestly run on a partial window.
+   Returns true (and explains) when it must refuse. */
+function needsAll(what){
+  if (DB.viewComplete) return false;
+  print(`${what} needs the whole inventory, and this build streams it from the`,"a");
+  print(`database in pages. Not ported yet — it would only touch what is on screen.`,"a");
+  return true;
+}
+
+/* cached summary so the title bar and home screen do not re-query constantly */
+let summary = {items:0, pieces:0, bins:0, low:0, projects:0, log:0, dbBytes:0};
+async function refreshSummary(){
+  try { summary = await DB.stats(); } catch(e){ /* offline: keep the last figures */ }
+  return summary;
+}
+
 /* ── DATA INTEGRITY ─────────────────────────────────────────────
    Every write is wrapped in a checksummed, versioned envelope and
    mirrored to a second store (localStorage + IndexedDB). Loads verify
@@ -490,9 +593,26 @@ const esc = s => String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"
 const cidStr = c => "C-"+String(c.cid).padStart(3,"0");
 const clsNum = bin => Math.min(9, Math.max(0, Math.floor(bin/1000)));
 const binStr = bin => String(bin).padStart(4,"0");
-const clsLabel = n => state.classes[n] || DEFAULT_CLASSES[n];
+/* Department labels live in the database now. deptCache is the server's copy;
+   state.classes remains as the fallback for the very first paint. */
+const clsLabel = n => (deptCache && deptCache[n] && deptCache[n].label)
+                      || state.classes[n] || DEFAULT_CLASSES[n];
 
+/* save() no longer writes the inventory anywhere — every mutation already went to
+   the database through DB, synchronously with its log entry. What is left is the
+   per-DEVICE preferences (theme, graph settings, HUD), which should NOT be shared
+   between the shop's tablets, so they stay in this browser. */
 async function save(){
+  try {
+    localStorage.setItem(KEY+"-prefs", JSON.stringify({
+      theme: state.theme, cfg: state.cfg, hud: state.hud,
+      cores: state.cores, activePid: state.activePid,
+    }));
+  } catch(e){ /* private mode: preferences just do not persist */ }
+  updateBadge(); graphSync();
+}
+
+async function saveLegacy(){
   const dataStr = JSON.stringify(state);
   const env = envelope(dataStr);
   lastSaveOk = true;
@@ -507,7 +627,45 @@ async function save(){
   if (backupHandle && ++backupDirty>=5) writeBackup();
   if (dbHandle) syncDb(false);   // mirror to the physical .db (batched, best-effort)
 }
+/* load() brings up the shell: device preferences from this browser, everything
+   else from the database. The inventory itself is NOT loaded — it is queried a
+   page at a time, which is the whole point of the exe. */
 async function load(){
+  state = { classes:[...DEFAULT_CLASSES], sections:{...DEFAULT_SECTIONS},
+            projects:[], nextPid:1, items:[], log:[], undo:[],
+            counted:{}, countlog:[], cfg:{} };
+  try {
+    const prefs = JSON.parse(localStorage.getItem(KEY+"-prefs") || "{}");
+    Object.assign(state, prefs);
+  } catch(e){ /* fall through to defaults */ }
+
+  try {
+    const [depts, secs, shop] = await Promise.all([
+      DB.depts(), DB.sections(-1), DB.meta("shop_name"),
+    ]);
+    deptCache = depts;
+    state.classes = depts.map(d=>d.label);
+    state.sections = {};
+    secs.forEach(x=>{ state.sections[x.code] = x.label; });
+    state.shopName = shop.value || "";
+    await refreshSummary();
+    lowDepts = await lowDeptSet();
+    // A brand new database is empty; offer the first-run doors as before.
+    state.firstRun = summary.items === 0;
+    state.seeded = summary.items > 0;
+    state.seededDemo = (await DB.meta("demo")).value === "1";
+  } catch(e){
+    print("cannot reach the server: "+e.message,"a");
+    print("this page is served by the invos program — is it still running?","d");
+  }
+  state.theme ||= "campbell";
+  if (state.cores===undefined) state.cores=true;
+  state.cfg = state.cfg || {};
+  if (state.hud===undefined) state.hud=true;
+  if (state.activePid===undefined) state.activePid=null;
+}
+
+async function loadLegacy(){
   let loaded=false, source="";
   const tryParse=(dataStr)=>{ try{ const o=JSON.parse(dataStr); if(o&&o.items){ state=o; return true; } }catch(e){} return false; };
 
@@ -562,7 +720,19 @@ function logAct(text, undoEntry){
     if (state.undo.length>50) state.undo = state.undo.slice(-50);
   }
 }
+/* Undo is the server's job now: reversing the change and marking the log entry
+   happen in one transaction, so the audit trail can never disagree with the data. */
 async function doUndo(){
+  let res;
+  try { res = await DB.undo(); }
+  catch(e){ print("undo failed: "+e.message,"a"); return false; }
+  if (!res.undone){ print(res.reason || "nothing to undo.","d"); return false; }
+  await refreshSummary(); deptCache=null; updateBadge(); graphSync();
+  print("undone: "+res.entry.text,"g");
+  return true;
+}
+
+async function doUndoLegacy(){
   const e = state.undo.pop();
   if (!e){ print("nothing to undo.","d"); return; }
   const find = cid => state.items.find(c=>c.cid===cid);
@@ -634,13 +804,13 @@ function printRows(list){
 let atHome=false;
 function isHome(){ return atHome; }
 /* ── R11: onboarding — first-run doors, shop-setup wizard, demo separation ── */
-function renderSectionMgr(dept){
+async function renderSectionMgr(dept){
   atHome=false; menuOpen=false; out.innerHTML=""; live.innerHTML=""; browseSel=-1;
   print("SECTIONS","w"); print("");
   print("↵ a row to rename · dept rows: + to add a section · sections: - to clear","d");
   print("");
   for (let n=0;n<10;n++){
-    const items=state.items.filter(c=>clsNum(c.bin)===n);
+    const items=(await DB.peek({dept:n, limit:1000})).rows;
     // department row (editable)
     const d=document.createElement("div"); d.className="line idx g"; d.dataset.menu="run:__secedit "+n;
     [[`  ${n}000  `,"c"],[clsLabel(n).slice(0,26).padEnd(28),null],
@@ -666,21 +836,21 @@ function renderSectionMgr(dept){
 }
 async function secEditInput(line){
   const c=mode.code, t=line.trim();
-  if (t.toLowerCase()==="cancel"){ endMode(); renderSectionMgr(); return; }
+  if (t.toLowerCase()==="cancel"){ endMode(); await renderSectionMgr(); return; }
   if (c.length===1){ if(t){ const before=clsLabel(+c); state.classes[+c]=t.toUpperCase();
       logAct(`renamed dept ${c}000: ${before} -> ${state.classes[+c]}`,{type:"class",n:+c,before}); await save(); } }
   else { const before=state.sections[c]||null;
     if(t){ state.sections[c]=t.toUpperCase(); logAct(`named section ${c}0`,{type:"section",key:c,before}); }
-    else if(before!==null){ const inUse=state.items.some(x=>clsNum(x.bin)===+c[0]&&secOf(x.bin)===+c[1]);
+    else if(before!==null){ const inUse=(await DB.peek({dept:+c[0], sec:+c[1], limit:1})).total > 0;
       if(inUse){ print("  section has items — can't clear; move them first.","a"); }
       else { delete state.sections[c]; logAct(`cleared section ${c}0`,{type:"section",key:c,before}); } }
     await save();
   }
-  endMode(); renderSectionMgr();
+  endMode(); await renderSectionMgr();
 }
 async function secAddInput(line){
   const t=line.trim().toLowerCase();
-  if (t==="cancel"){ endMode(); renderSectionMgr(); return; }
+  if (t==="cancel"){ endMode(); await renderSectionMgr(); return; }
   if (mode.step===0){
     if(!/^[0-9]$/.test(t)){ print("  pick a digit 0-9","a"); return; }
     mode.digit=t; mode.step=1; setPS1(`  section ${mode.dept}${t}0 name: `); return;
@@ -689,7 +859,7 @@ async function secAddInput(line){
   if (line.trim()){ const before=state.sections[key]||null;
     state.sections[key]=line.trim().toUpperCase();
     logAct(`added section ${key}0`,{type:"section",key,before}); await save(); }
-  endMode(); renderSectionMgr();
+  endMode(); await renderSectionMgr();
 }
 
 function firstRun(){
@@ -737,9 +907,19 @@ async function setupInput(line){
   if (t) m.draft.depts[d]=t.toUpperCase();
   return setupWizard(m.step+1, m.draft);
 }
-function loadDemoData(){
-  state.items=JSON.parse(JSON.stringify(SEED)); state.nextCid=SEED.length+1;
+/* The demo now seeds the DATABASE (one bulk insert, one undo step) instead of a
+   browser array, so "explore the demo" produces something every device in the shop
+   can see — and `undo` backs the whole thing out. */
+async function loadDemoData(){
+  try {
+    await DB.bulk(SEED.map(c=>({
+      name:c.name, bin:c.bin, qty:c.qty, min:c.min||0,
+      value:c.value||"", pkg:c.pkg||"", part:c.part||"", notes:c.notes||"",
+    })), "demo");
+    await DB.setMeta("demo","1");
+  } catch(e){ print("could not load the demo data: "+e.message,"a"); return; }
   state.seeded=true; state.seededDemo=true; state.firstRun=false;
+  deptCache=null; await refreshSummary(); lowDepts=await lowDeptSet();
   // seed demo PROJECTS that deliberately SHARE parts, so the galaxy shows bridges.
   // cids reference the SEED order (1-based): 1 R10k,2 R220,3 C100u,4 C0.1u,5 LLC,
   // 6 HC-SR04,7 OLED,8 Arduino Uno,9 ESP32,10 Jumpers,11 Breadboard,12 Iron
@@ -755,33 +935,55 @@ function loadDemoData(){
       bom:[{cid:8,need:1},{cid:6,need:2},{cid:2,need:4},{cid:10,need:10}]},                    // Uno,HC-SR04,R220,Jumpers
   ];
   state.nextPid=5; state.activePid=1;
-  // give a couple items a low count so the demo shows amber/pulse behaviour
-  const r10=state.items.find(i=>i.cid===1); if(r10) r10.qty=30;   // below min 50
+}
+
+/* home() stays SYNCHRONOUS and paints from cached aggregates, then refreshes them
+   in the background. Making it async instead would have raced every caller that
+   prints or renders straight after it (and there are a dozen, including bare key
+   handlers). The counters are trigger-maintained server-side, so the refresh is a
+   couple of cheap reads no matter how large the inventory is. */
+let deptCache = null;
+let lowDepts = new Set();
+
+async function refreshHome(repaint){
+  try {
+    const [d] = await Promise.all([DB.depts(), refreshSummary()]);
+    deptCache = d;
+    lowDepts = await lowDeptSet();
+  } catch(e){
+    if (deptCache === null){
+      out.innerHTML="";
+      print("cannot reach the server: "+e.message,"a");
+      print("this build is served by the invos program — is it still running?","d");
+      return;
+    }
+  }
+  if (repaint && isHome()) home();
 }
 
 function home(){
   menuOpen=false; atHome=true;
   out.innerHTML=""; live.innerHTML="";
+  setView([], 0);
+  const depts = deptCache || [];
+  if (deptCache === null) refreshHome(true);   // first paint: fill in as soon as it lands
   if (state.seededDemo) print("── DEMO DATA ──  'demo clear' to start real","a");
   if (state.shopName) print(state.shopName,"w");
   print("");
-  const lows = state.items.filter(c=>c.qty<=c.min).length;
+  const lows = summary.low;
   { // Sections: header with the totals inline to the right
-    const totalPcs=state.items.reduce((a,c)=>a+c.qty,0);
-    const binsUsed=new Set(state.items.map(c=>c.bin)).size;
     const d=document.createElement("div"); d.className="line";
     const h=document.createElement("span"); h.className="w"; h.textContent="Sections:";
     const t=document.createElement("span"); t.className="d";
-    t.textContent="   "+state.items.length+" components · "+totalPcs+" pcs · "+binsUsed+" bins";
+    t.textContent="   "+summary.items+" components · "+summary.pieces+" pcs · "+summary.bins+" bins";
     d.appendChild(h); d.appendChild(t); out.appendChild(d);
   }
   for (let n=0;n<10;n++){
-    const items = state.items.filter(c=>clsNum(c.bin)===n);
-    const pcs = items.reduce((s,c)=>s+c.qty,0);
-    const count = items.length
-      ? `${String(items.length).padStart(3)} kinds ${String(pcs).padStart(6)} pcs`
+    const dep = depts[n] || {items:0, qty:0};
+    const count = dep.items
+      ? `${String(dep.items).padStart(3)} kinds ${String(dep.qty).padStart(6)} pcs`
       : "·";
-    const lowHere = items.some(c=>c.qty<=c.min);
+    const lowHere = lowDepts.has(n);
     const d=document.createElement("div");
     d.className="line idx g"; d.dataset.cmd=String(n);
     [[`  ${n}000`,"c"],["  "+clsLabel(n).slice(0,28).padEnd(30),null],[count,"d"],
@@ -803,25 +1005,48 @@ function home(){
   term.scrollTop = 0;
 }
 
+/* Which departments hold something low, for the <LOW> flags on the home screen.
+   One bounded query rather than ten. */
+async function lowDeptSet(){
+  const set = new Set();
+  try {
+    const page = await DB.peek({low:1, limit:500, sort:"bin"});
+    page.rows.forEach(c=>set.add(clsNum(c.bin)));
+  } catch(e){ /* the flags are a nicety; never block the home screen on them */ }
+  return set;
+}
+
 /* ---------- search: token AND-match, unicode-tolerant ---------- */
 const norm = s => String(s).toLowerCase().replace(/µ/g,"u").replace(/Ω/g,"ohm").replace(/ω/g,"ohm");
 function hay(c){ return norm([c.name,c.value,c.pkg,c.part,c.notes,"bin "+c.bin,cidStr(c),
   clsLabel(clsNum(c.bin)), secLabel(clsNum(c.bin),secOf(c.bin))||""].join(" ")); }
-function search(q){
+/* search runs on the server. `approx` is set for live typing: it returns the top
+   hits without counting or sorting every match, which is what keeps a keystroke
+   fast on a large inventory. Explicit listings ask for the exact set. */
+async function search(q, opts){
   const toks = norm(q).split(/\s+/).filter(Boolean);
   if (!toks.length) return [];
-  return state.items.filter(c=>{ const h=hay(c); return toks.every(t=>h.includes(t)); })
-    .sort((a,b)=>a.bin-b.bin || a.name.localeCompare(b.name));
+  const o = Object.assign({q, sort:"bin"}, opts||{});
+  try {
+    const page = await DB.peek(o);
+    return page.rows;
+  } catch(e){ print("search failed: "+e.message,"a"); return []; }
 }
-function resolve(q){
+/* resolve turns whatever the user typed into one item: a C-ID, an exact name, or
+   a unique search hit. It queries the server, so it works on the whole inventory
+   and not just the page on screen. */
+async function resolve(q){
   if (!q) return {err:"give a name or C-ID"};
-  const byId = state.items.find(c=>cidStr(c).toLowerCase()===q.toLowerCase());
-  if (byId) return {c:byId};
-  const exact = state.items.filter(c=>norm(c.name)===norm(q));
+  const m = String(q).trim().match(/^c-?(\d+)$/i);
+  if (m){
+    try { return {c: await DB.item(parseInt(m[1],10))}; }
+    catch(e){ return {err:`no component with id ${q.toUpperCase()}`}; }
+  }
+  const hits = await search(q, {limit:50});
+  const exact = hits.filter(c=>norm(c.name)===norm(q));
   if (exact.length===1) return {c:exact[0]};
-  const part = search(q);
-  if (part.length===1) return {c:part[0]};
-  if (part.length>1) return {many:part};
+  if (hits.length===1) return {c:hits[0]};
+  if (hits.length>1) return {many:hits};
   return {err:`no component matches "${q}"`};
 }
 /* command menu — browsable like a section. each entry either runs (run:)
@@ -922,10 +1147,12 @@ function focusHeader(crumb){
   print("");
 }
 
-function listClass(n){
+async function listClass(n){
   focusHeader(`${n}000  ${clsLabel(n)}`);
-  const items=state.items.filter(c=>clsNum(c.bin)===n)
-    .sort((a,b)=>a.bin-b.bin||a.name.localeCompare(b.name));
+  const page = await DB.items({dept:n, sort:"bin", limit:1000});
+  const items = page.rows;
+  if (page.capped || page.total > items.length)
+    print(`  showing ${items.length} of ${page.total} — narrow it with a section digit, e.g. ${n}1`,"d");
   if (!items.length){ print("  empty shelf — add something: add <name>","d"); term.scrollTop=0; return; }
   let last=-1;
   items.forEach(c=>{
@@ -938,22 +1165,22 @@ function listClass(n){
   });
   term.scrollTop=0;
 }
-function listSection(d,t){
+async function listSection(d,t){
   const lbl=secLabel(d,t);
   focusHeader(`${d}${t}00  ${clsLabel(d)}${lbl?"  /  "+lbl:""}`);
-  const items=state.items.filter(c=>clsNum(c.bin)===d && secOf(c.bin)===t)
-    .sort((a,b)=>a.bin-b.bin||a.name.localeCompare(b.name));
+  const page = await DB.items({dept:d, sec:t, sort:"bin", limit:1000});
+  const items = page.rows;
   if (!items.length){ print("  empty section — add something: add <name>","d"); term.scrollTop=0; return; }
   printRows(items);
   term.scrollTop=0;
 }
-function nextFreeBin(n, sec){
-  const used = new Set(state.items.map(c=>c.bin));
-  if (sec!==undefined && sec!==null)
-    for (let b=n*1000+sec*100+1; b<n*1000+sec*100+100; b++) if(!used.has(b)) return b;
-  for (let b=n*1000+101; b<n*1000+1000; b++) if(!used.has(b)) return b;
-  for (let b=n*1000; b<n*1000+101; b++) if(!used.has(b)) return b;
-  return n*1000+101;
+/* The database picks the next free bin — it is the only thing that can see every
+   bin already in use. Falls back to the first bin of the section if the server is
+   unreachable, which at least keeps `add` usable. */
+async function nextFreeBin(n, sec){
+  const d = (sec===undefined || sec===null) ? 1 : sec;
+  try { return (await DB.nextBin(n, d)).bin; }
+  catch(e){ return n*1000 + d*100 + 10; }
 }
 /* ---------- name tidier: consistent wording, units, casing ---------- */
 const ACRONYMS = new Set("led oled lcd tft ic usb jst pir rtc smd tht mcu pcb i2c spi uart rgb ws2812b hdmi gpio adc dac pwm ntc ptc ir rf bt".split(" "));
@@ -1127,7 +1354,16 @@ async function countInput(line){
 /* ---------- live search under the prompt ---------- */
 const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
-function renderLive(){
+/* Live search now crosses the network on every keystroke, which introduces a
+   hazard the in-memory version did not have: a slow reply for "wid" can land
+   after the reply for "widget" and repaint stale results. liveSeq stamps each
+   run and a stale one throws its results away.
+
+   It asks for an approximate page — the top 8 plus a capped total — so the
+   server never counts or sorts thousands of matches for a keystroke. */
+let liveSeq = 0;
+async function renderLive(){
+  const seq = ++liveSeq;
   if (mode.type!=="normal"){ live.innerHTML=""; return; }
   const t = cmd.value.trim();
   live.innerHTML="";
@@ -1143,7 +1379,10 @@ function renderLive(){
     el.textContent=`  ↵ opens ${what}`;
     live.appendChild(el); return;
   }
-  const r = search(t);
+  const page = await DB.peek({q:t, limit:8, approx:1, sort:"bin"}).catch(()=>null);
+  if (seq !== liveSeq) return;              // a newer keystroke superseded this one
+  if (!page){ return; }
+  const r = page.rows;
   if (!r.length){
     liveItems=[]; liveSel=-1;
     const el=document.createElement("div"); el.className="line d";
@@ -1158,8 +1397,9 @@ function renderLive(){
     el.dataset.i=i;
     live.appendChild(el);
   });
+  const more = page.total - liveItems.length;
   const tail=document.createElement("div"); tail.className="line d";
-  tail.textContent = (r.length>8?`  +${r.length-8} more · `:`  `)
+  tail.textContent = (more>0 ? `  +${more}${page.capped?"+":""} more · ` : `  `)
     + (liveSel>=0 ? "↵ info · ^↵ take · ⇧↵ stock · p project" : "↓ select");
   live.appendChild(tail);
   term.scrollTop = term.scrollHeight;
@@ -1178,14 +1418,19 @@ function parseQuickAdd(rest){
   }
   return {name:name.join(" "), qty, bin};
 }
+/* The server assigns the permanent CID and writes the row; the log entry and its
+   undo record are written in the same transaction, so an add can never end up
+   half-recorded. */
 async function commitAdd(draft){
-  state.items.push(draft); state.nextCid++;
-  logAct(`added ${draft.name} -> BIN ${draft.bin} qty ${draft.qty}`, {type:"add", cid:draft.cid});
-  await save();
-  const n = clsNum(draft.bin);
-  const sl=secLabel(n,secOf(draft.bin));
-  print(`saved ${draft.name} -> BIN ${binStr(draft.bin)} (${clsLabel(n)}${sl?" / "+sl:""}) qty ${draft.qty}  ${cidStr(draft)}`,"g");
-  print(`  details anytime: edit ${cidStr(draft)}`,"d");
+  let saved;
+  try { saved = await DB.add(draft); }
+  catch(e){ print("could not save: "+e.message,"a"); return; }
+  await refreshSummary(); deptCache=null; updateBadge(); graphSync();
+  const n = clsNum(saved.bin);
+  const sl=secLabel(n,secOf(saved.bin));
+  print(`saved ${saved.name} -> BIN ${binStr(saved.bin)} (${clsLabel(n)}${sl?" / "+sl:""}) qty ${saved.qty}  ${cidStr(saved)}`,"g");
+  print(`  details anytime: edit ${cidStr(saved)}`,"d");
+  return saved;
 }
 function askClassFor(draft){
   mode={type:"pickclass", draft};
@@ -1551,9 +1796,9 @@ async function exec(line){
 
   if (/^\d{1,4}$/.test(t)){
     const n=parseInt(t,10);
-    if (t.length===1){ listClass(n); return; }
-    if (t.length===2){ listSection(Math.floor(n/10), n%10); return; }
-    const binHit=state.items.filter(c=>c.bin===n);
+    if (t.length===1){ await listClass(n); return; }
+    if (t.length===2){ await listSection(Math.floor(n/10), n%10); return; }
+    const binHit=(await DB.items({bin:n, sort:"bin"})).rows;
     if (binHit.length){
       const d=clsNum(n), sc=secOf(n), sl=secLabel(d,sc);
       focusHeader(`BIN ${binStr(n)}  ${clsLabel(d)}${sl?"  /  "+sl:""}`);
@@ -1592,6 +1837,7 @@ async function exec(line){
     }
 
     case "rollback": {
+      if (notPorted("Rollback", "Use `undo`, which the database backs.")) return;
       const snaps=await readSnapshots();
       const usable=snaps.filter(sn=>checksum(sn.data)===sn.sum);
       if (usable.length<2){ print("no earlier snapshot to roll back to yet.","a"); return; }
@@ -1614,6 +1860,7 @@ async function exec(line){
     }
 
     case "db": case "database": {
+      if (notPorted("The browser-side .db mirror", "The exe already owns a real SQLite file — see `health`.")) return;
       const a=rest.trim().toLowerCase();
       if (a==="off"){ dbHandle=null; await idb("readwrite",st=>st.delete("dbhandle")); print("physical db sync off (browser storage still primary).","d"); return; }
       if (a==="export"||a==="save"){ const bytes=await buildDbBytes(); if(!bytes){ print("couldn't load SQLite engine.","a"); return; } dlBytes(bytes,"invos-"+new Date().toISOString().slice(0,10)+".db"); print("invos.db exported — open it in any SQLite tool.","g"); return; }
@@ -1635,6 +1882,7 @@ async function exec(line){
     }
 
     case "server": {
+      if (notPorted("The old sync-server setting", "This build IS the server.")) return;
       const a=rest.trim();
       if (!a){
         out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
@@ -1760,13 +2008,13 @@ async function exec(line){
     case "home": case "clear": case "cls": home(); return;
 
     case "find": case "f": {
-      const r=search(rest);
+      const r=await search(rest, {limit:200});
       r.length ? printRows(r) : print(`no components match "${rest}"`,"a");
       return;
     }
 
     case "info": {
-      const r=resolve(rest);
+      const r=await resolve(rest);
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ printRows(r.many); return; }
       await infoCard(r.c); return;
@@ -1777,15 +2025,17 @@ async function exec(line){
       const p=parseQuickAdd(rest);
       if (!p.name){ print("needs a name: add 10k resistor x50","a"); return; }
       const name=tidyName(p.name);
-      const dup = state.items.find(c=>norm(c.name)===norm(name));
+      // duplicate check against the WHOLE inventory, not just what is on screen
+      const dupHits = await search(name, {limit:20});
+      const dup = dupHits.find(c=>norm(c.name)===norm(name));
       if (dup){ print(`already exists: ${dup.name} in BIN ${dup.bin} — did you mean: stock ${cidStr(dup)} ${p.qty}`,"a"); return; }
-      const draft={cid:state.nextCid, name, qty:p.qty, min:1, value:"", pkg:"", part:"", notes:""};
+      const draft={name, qty:p.qty, min:1, value:"", pkg:"", part:"", notes:""};
       const done=async()=>{ await commitAdd(draft);
         if (name!==p.name.trim()) print(`  tidied from "${p.name.trim()}"`,"d"); };
       if (p.bin!==null){ draft.bin=p.bin; await done(); return; }
       const g=guessClass(name);
       if (g){
-        draft.bin=nextFreeBin(g.d, g.s);
+        draft.bin=await nextFreeBin(g.d, g.s);
         await done();
         if (secOf(draft.bin)!==g.s || clsNum(draft.bin)!==g.d)
           print(`  ~ section ${g.d}${g.s}00 is full — filed in BIN ${binStr(draft.bin)} instead`,"a");
@@ -1806,7 +2056,7 @@ async function exec(line){
       await save(); setupWizard(0); return;
     }
     case "__fr_demo": {
-      loadDemoData(); await save(); home();
+      await loadDemoData(); await save(); home();
       print("demo loaded — opening the project galaxy…","d");
       if (graphMode==="off") setGraph("split");
       g3d=true; setGraphView({kind:"galaxy"});
@@ -1831,7 +2081,7 @@ async function exec(line){
           mode={type:"confirm", c:null, demoLoad:true};
           setPS1(`load DEMO data over your current inventory? [y/n] `); return;
         }
-        loadDemoData(); await save(); home();
+        await loadDemoData(); await save(); home();
         print("demo loaded — opening the galaxy…","d");
         if (graphMode==="off") setGraph("split");
         g3d=true; setGraphView({kind:"galaxy"});
@@ -1847,7 +2097,7 @@ async function exec(line){
       const del=rest.match(/^(\d{2})\s+(clear|del|delete|-|x|remove)$/i);
       if (del){
         const key=del[1];
-        const inUse=state.items.some(c=>clsNum(c.bin)===+key[0]&&secOf(c.bin)===+key[1]);
+        const inUse=(await DB.peek({dept:+key[0], sec:+key[1], limit:1})).total > 0;
         if (inUse){ print(`section ${key}0 has items — move or remove them first (open ${key}).`,"a"); return; }
         const before=state.sections[key]||null;
         if (before===null){ print(`section ${key}0 has no custom name.`,"d"); return; }
@@ -1872,7 +2122,7 @@ async function exec(line){
       return;
     }
     case "sections": case "shelves": {
-      renderSectionMgr();
+      await renderSectionMgr();
       return;
     }
 
@@ -1897,7 +2147,7 @@ async function exec(line){
 
     case "map": case "classes": {
       for (let n=0;n<10;n++){
-        const items=state.items.filter(c=>clsNum(c.bin)===n);
+        const items=(await DB.peek({dept:n, limit:1000})).rows;
         print(`  ${n}000  ${clsLabel(n).slice(0,26).padEnd(28)}${items.length?String(items.length).padStart(3)+" items":"  ·"}`,
               "g", String(n));
         const secs=new Set(items.map(c=>secOf(c.bin)));
@@ -1913,6 +2163,7 @@ async function exec(line){
       return;
     }
     case "remap": {
+      if (needsAll("remap")) return;
       const m=rest.match(/^(\d{1,4})\s+(\d{1,4})$/);
       if (!m){ print("renumber:  remap 1 3 (dept) · remap 15 35 (section) · remap 1501 3501 (bin)","d"); return; }
       const [a,b]=[m[1],m[2]];
@@ -1929,19 +2180,20 @@ async function exec(line){
     case "move": {
       const m=rest.match(/^(.*?)\s+@?(\d{1,4})$/);
       if (!m){ print("usage: move <name|C-ID> <bin>","a"); return; }
-      const r=resolve(m[1].trim());
+      const r=await resolve(m[1].trim());
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
-      { const from=r.c.bin; r.c.bin=parseInt(m[2],10);
-        logAct(`moved ${r.c.name} BIN ${binStr(from)} -> ${binStr(r.c.bin)}`, {type:"move", cid:r.c.cid, from}); }
-      await save();
-      const n=clsNum(r.c.bin), sl=secLabel(n,secOf(r.c.bin));
-      print(`${r.c.name} -> BIN ${binStr(r.c.bin)} (${clsLabel(n)}${sl?" / "+sl:""})`,"g");
+      let moved;
+      try { moved = await DB.edit(r.c.cid, {bin: parseInt(m[2],10)}); }
+      catch(e){ print("could not move it: "+e.message,"a"); return; }
+      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
+      const n=clsNum(moved.bin), sl=secLabel(n,secOf(moved.bin));
+      print(`${moved.name} -> BIN ${binStr(moved.bin)} (${clsLabel(n)}${sl?" / "+sl:""})`,"g");
       return;
     }
 
     case "edit": {
-      const r=resolve(rest);
+      const r=await resolve(rest);
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       startEdit(r.c); return;
@@ -1950,7 +2202,7 @@ async function exec(line){
     case "del": case "rm": {
       const bm=rest.match(/^(?:bin\s+)?(\d{3,4})$/);
       if (bm){
-        const b=parseInt(bm[1],10), its=state.items.filter(c=>c.bin===b);
+        const b=parseInt(bm[1],10), its=(await DB.peek({bin:b, limit:1000})).rows;
         if (its.length>1){
           printRows(its);
           mode={type:"confirmbin", bin:b, items:its};
@@ -1958,7 +2210,7 @@ async function exec(line){
           return;
         }
       }
-      const r=resolve(rest);
+      const r=await resolve(rest);
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       mode={type:"confirm", c:r.c};
@@ -1968,33 +2220,33 @@ async function exec(line){
 
     case "take": case "add-stock": case "stock": {
       const m=rest.match(/^(.*?)(?:\s+(\d+))?$/);
-      const r=resolve(m[1].trim());
+      const r=await resolve(m[1].trim());
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       const n=parseInt(m[2]||"1",10);
+      // One atomic statement on the server. Two people taking from the same bin at
+      // the same moment both get counted; a read-modify-write here would lose one.
+      const before = r.c.qty;
+      let after;
+      try { after = await DB.adjust(r.c.cid, v==="take" ? -n : n); }
+      catch(e){ print("could not update stock: "+e.message,"a"); return; }
+      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
       if (v==="take"){
-        const taken=Math.min(n,r.c.qty);
-        r.c.qty-=taken;
-        if (taken>0) logAct(`took ${taken} x ${r.c.name} (BIN ${r.c.bin})`, {type:"take", cid:r.c.cid, n:taken});
-        await save();
-        print(`took ${taken} × ${r.c.name} from BIN ${r.c.bin} — ${r.c.qty} left${taken<n?` (only had ${taken})`:""}`,
-              r.c.qty<=r.c.min?"a":"g");
-        if (r.c.qty<=r.c.min) print(`  <LOW> at/below minimum (${r.c.min})`,"a");
+        const taken = before - after.qty;
+        print(`took ${taken} × ${after.name} from BIN ${after.bin} — ${after.qty} left${taken<n?` (only had ${taken})`:""}`,
+              after.qty<=after.min?"a":"g");
+        if (after.qty<=after.min) print(`  <LOW> at/below minimum (${after.min})`,"a");
       } else {
-        r.c.qty+=n;
-        logAct(`stocked ${n} x ${r.c.name} (BIN ${r.c.bin})`, {type:"stock", cid:r.c.cid, n});
-        await save();
-        print(`added ${n} × ${r.c.name} to BIN ${r.c.bin} — now ${r.c.qty}`,"g");
+        print(`added ${n} × ${after.name} to BIN ${after.bin} — now ${after.qty}`,"g");
       }
       return;
     }
 
     case "list": case "ls": case "l": case "bins": {
-      if (/^\d$/.test(rest)){ listClass(+rest); return; }
+      if (/^\d$/.test(rest)){ await listClass(+rest); return; }
       let shown=0;
       for (let n=0;n<10;n++){
-        const items=state.items.filter(c=>clsNum(c.bin)===n)
-          .sort((a,b)=>a.bin-b.bin||a.name.localeCompare(b.name));
+        const items=(await DB.peek({dept:n, sort:"bin", limit:1000})).rows;
         if (!items.length) continue;
         print(`${n}00  ${clsLabel(n)}`,"w");
         printRows(items); shown+=items.length;
@@ -2006,14 +2258,14 @@ async function exec(line){
     }
 
     case "low": {
-      let lows=state.items.filter(c=>c.qty<=c.min);
+      const lowQ = {low:1, sort:"bin", limit:1000};
       let scope="";
-      if (/^\d$/.test(rest)){ lows=lows.filter(c=>clsNum(c.bin)===+rest); scope=` in ${clsLabel(+rest)}`; }
+      if (/^\d$/.test(rest)){ lowQ.dept=+rest; scope=` in ${clsLabel(+rest)}`; }
       else if (/^\d\d$/.test(rest)){
-        lows=lows.filter(c=>clsNum(c.bin)===+rest[0] && secOf(c.bin)===+rest[1]);
+        lowQ.dept=+rest[0]; lowQ.sec=+rest[1];
         scope=` in ${secLabel(+rest[0],+rest[1])||rest+"00"}`;
       }
-      lows.sort((a,b)=>a.bin-b.bin);
+      const lows=(await DB.items(lowQ)).rows;
       if(!lows.length){ print(`nothing low${scope} — stock is healthy.`,"g"); return; }
       print("LOW STOCK"+scope.toUpperCase(),"w");
       lows.forEach(c=>print(`  ${c.name.slice(0,26).padEnd(28)}BIN ${binStr(c.bin).padEnd(7)}qty ${c.qty} / min ${c.min}`,"a","info "+cidStr(c)));
@@ -2021,6 +2273,7 @@ async function exec(line){
     }
 
     case "proj": case "project": {
+      if (notPorted("Projects / BOM", "Tracked as P5.")) return;
       const toks0=rest.split(/\s+/);
       const sub=(toks0[0]||"").toLowerCase();
       const r2=rest.slice((toks0[0]||"").length).trim();
@@ -2055,7 +2308,7 @@ async function exec(line){
           if (/^x\d+$/i.test(t)){ qty=parseInt(t.slice(1),10); return false; }
           return true;
         }).join(" ");
-        const rr=resolve(query); if (rr.err){ print(rr.err,"a"); return; }
+        const rr=await resolve(query); if (rr.err){ print(rr.err,"a"); return; }
         if (rr.many){ print("be more specific:","a"); printRows(rr.many); return; }
         projSnap(`bom: +${qty}x ${rr.c.name} -> ${pr.p.name}`);
         const line=pr.p.bom.find(l=>l.cid===rr.c.cid);
@@ -2065,7 +2318,7 @@ async function exec(line){
       if (sub==="rm"||sub==="remove"){
         const t2=r2.split(/\s+/);
         const pr=resolveProj(t2[0]); if (pr.err){ print(pr.err,"a"); return; }
-        const rr=resolve(t2.slice(1).join(" ")); if (rr.err){ print(rr.err,"a"); return; }
+        const rr=await resolve(t2.slice(1).join(" ")); if (rr.err){ print(rr.err,"a"); return; }
         if (rr.many){ print("be more specific:","a"); printRows(rr.many); return; }
         projSnap(`bom: removed ${rr.c.name} from ${pr.p.name}`);
         pr.p.bom=pr.p.bom.filter(l=>l.cid!==rr.c.cid);
@@ -2113,6 +2366,7 @@ async function exec(line){
     }
 
     case "build": {
+      if (notPorted("Build / pick list", "Needs projects first (P5).")) return;
       const t2=rest.split(/\s+/);
       const partial=t2[t2.length-1]?.toLowerCase()==="partial";
       const pname=partial?t2.slice(0,-1).join(" "):rest;
@@ -2135,7 +2389,7 @@ async function exec(line){
       await save();
       print(`built ${pr.p.name} — took ${taken} pcs across ${pr.p.bom.length} BOM line${pr.p.bom.length===1?"":"s"}. (one undo returns everything)`,"g");
       print(`  paper pick list: proj print ${pr.p.name}`,"d");
-      const lows=state.items.filter(c=>c.qty<=c.min).length;
+      const lows=summary.low;
       if (lows) print(`  ${lows} part${lows===1?"":"s"} now low — 'low'`,"a");
       return;
     }
@@ -2162,6 +2416,7 @@ async function exec(line){
     }
 
     case "backup": {
+      if (notPorted("File auto-backup", "Copy the .db file shown by `health`.")) return;
       if (rest.toLowerCase()==="off"){
         backupHandle=null; await idb("readwrite", st=>st.delete("file"));
         print("auto-backup off.","d"); updateBadge(); return;
@@ -2183,15 +2438,14 @@ async function exec(line){
 
     case "labels": case "label": {
       let bins=[];
-      if (!rest) bins=[...new Set(state.items.map(c=>c.bin))].sort((a,b)=>a-b);
-      else if (/^\d$/.test(rest))
-        bins=[...new Set(state.items.filter(c=>clsNum(c.bin)===+rest).map(c=>c.bin))].sort((a,b)=>a-b);
-      else if (/^\d\d$/.test(rest))
-        bins=[...new Set(state.items.filter(c=>clsNum(c.bin)===+rest[0]&&secOf(c.bin)===+rest[1]).map(c=>c.bin))].sort((a,b)=>a-b);
+      const binQuery = async o => [...new Set((await DB.peek(Object.assign({limit:1000, sort:"bin"}, o))).rows.map(c=>c.bin))].sort((a,b)=>a-b);
+      if (!rest) bins=await binQuery({});
+      else if (/^\d$/.test(rest)) bins=await binQuery({dept:+rest});
+      else if (/^\d\d$/.test(rest)) bins=await binQuery({dept:+rest[0], sec:+rest[1]});
       else if (/^\d{3,4}$/.test(rest)) bins=[parseInt(rest,10)];
       else { print("labels · labels 1 (dept) · labels 15 (section) · label 1101 (one bin)","d"); return; }
       if (!bins.length){ print("no bins in that range yet.","a"); return; }
-      labelSheet(bins);
+      await labelSheet(bins);
       print(`${bins.length} label${bins.length===1?"":"s"} sent to print — 62×29 mm with QR codes. any printer works; a label printer's driver will fit them to its media.`,"g");
       return;
     }
@@ -2199,8 +2453,9 @@ async function exec(line){
     case "scan": await startScan(); return;
 
     case "count": {
+      if (notPorted("Cycle count", "Tracked as P6.")) return;
       const a=rest.trim().toLowerCase();
-      let items=[...state.items]; let scope="all";
+      let items=(await DB.peek({limit:1000, sort:"bin"})).rows; let scope="all";
       if (/^\d$/.test(a)){ items=items.filter(c=>clsNum(c.bin)===+a); scope=clsLabel(+a); }
       else if (/^\d\d$/.test(a)){ items=items.filter(c=>clsNum(c.bin)===+a[0]&&secOf(c.bin)===+a[1]); scope=secLabel(+a[0],+a[1])||a; }
       else if (a==="due"){ const cutoff=Date.now()-30*864e5;
@@ -2225,7 +2480,7 @@ async function exec(line){
     }
 
     case "photo": {
-      const r=resolve(rest.replace(/\s+(rm|remove|clear|del)$/i,""));
+      const r=await resolve(rest.replace(/\s+(rm|remove|clear|del)$/i,""));
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       if (/\s(rm|remove|clear|del)$/i.test(rest)){
@@ -2289,6 +2544,7 @@ async function exec(line){
     }
 
     case "tidy": {
+      if (needsAll("tidy")) return;
       const props = state.items.map(c=>({c, after:tidyName(c.name)})).filter(x=>x.after!==x.c.name);
       if (!props.length){ print("nothing to tidy — names are already consistent.","g"); return; }
       if (rest.toLowerCase()==="apply"){
@@ -2306,6 +2562,7 @@ async function exec(line){
     }
 
     case "doctor": case "normalize": case "fsck": {
+      if (needsAll("the database doctor")) return;
       const d=doctorScan();
       const issues=d.nameFixes.length+d.fldFixes.length+d.exact.length;
       if (!issues && !d.review.length){ print("database clean — no duplicates or messy entries.","g"); return; }
@@ -2350,9 +2607,10 @@ async function exec(line){
     }
 
     case "merge": {
+      if (needsAll("merge")) return;
       const parts=rest.split(/\s+/).filter(Boolean);
       if (parts.length!==2){ print("usage: merge <keep> <remove>  (names or C-IDs)","a"); return; }
-      const ra=resolve(parts[0]), rb=resolve(parts[1]);
+      const ra=await resolve(parts[0]), rb=await resolve(parts[1]);
       for (const [r,lbl] of [[ra,parts[0]],[rb,parts[1]]]){
         if (r.err){ print(r.err,"a"); return; }
         if (r.many){ print(`"${lbl}" is ambiguous — use a C-ID:`,"a"); printRows(r.many); return; }
@@ -2373,14 +2631,17 @@ async function exec(line){
       const stamp=l=>{ const d=new Date(l.ts);
         return `${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
       if (rest.toLowerCase()==="export"){
-        const csv=["time,action"].concat(state.log.map(l=>
+        const logRows=(await DB.log(1000)).rows.slice().reverse();
+        const csv=["time,action"].concat(logRows.map(l=>
           `${new Date(l.ts).toISOString()},${'"'+l.text.replace(/"/g,'""')+'"'}`)).join("\n");
         print("ACTIVITY LOG CSV:","w");
         print("─".repeat(46),"d"); print(csv,"g"); print("─".repeat(46),"d");
         try{ await navigator.clipboard.writeText(csv); print("(copied to clipboard)","d"); }catch(e){}
         return;
       }
-      let L=[...state.log];
+      let L=[];
+      try { L=(await DB.log(200)).rows.slice().reverse(); }
+      catch(e){ print("could not read the activity log: "+e.message,"a"); return; }
       let label="";
       if (rest.toLowerCase()==="today"){
         const mid=new Date(); mid.setHours(0,0,0,0);
@@ -2398,15 +2659,15 @@ async function exec(line){
     }
 
     case "stats": {
-      const total=state.items.reduce((s,c)=>s+c.qty,0);
-      const bins=new Set(state.items.map(c=>c.bin)).size;
-      const lows=state.items.filter(c=>c.qty<=c.min).length;
+      await refreshSummary();
+      const total=summary.pieces;
       print("STATS","w");
-      print(`  unique components   ${state.items.length}\n  total items         ${total}\n  bins used           ${bins}\n  low stock           ${lows}`,"g");
+      print(`  unique components   ${summary.items}\n  total items         ${total}\n  bins used           ${summary.bins}\n  low stock           ${summary.low}`,"g");
       return;
     }
 
     case "export": {
+      if (needsAll("CSV export")) return;
       state.lastExport=Date.now(); await save();
       const csv=toCSV();
       print("CSV EXPORT — copy everything between the lines:","w");
@@ -2416,6 +2677,7 @@ async function exec(line){
     }
 
     case "import": {
+      if (notPorted("Spreadsheet import", "The API takes bulk rows already; wiring is P7.")) return;
       const a=rest.trim().toLowerCase();
       if (a==="paste"){
         mode={type:"importpaste", buf:[]};
@@ -2451,7 +2713,7 @@ async function exec(line){
       return;
 
     default: {
-      const r=search(t);
+      const r=await search(t, {limit:200});
       if (r.length) printRows(r);
       else { print(`no matches for "${t}"`,"a"); print(`  add it:  add ${t} x1`,"d"); }
     }
@@ -3120,9 +3382,16 @@ function qrSVG(text){
 }
 
 /* ---------- printable bin labels ---------- */
-function labelSheet(bins){
+async function labelSheet(bins){
+  // Fetch every bin's contents first: the label rendering below is synchronous, and
+  // awaiting inside a .map() callback does not do what it looks like it does.
+  const contents = new Map();
+  await Promise.all(bins.map(async b => {
+    try { contents.set(b, (await DB.peek({bin:b, limit:200})).rows); }
+    catch(e){ contents.set(b, []); }
+  }));
   const lbls = bins.map(b=>{
-    const items=state.items.filter(c=>c.bin===b);
+    const items = contents.get(b) || [];
     const d=clsNum(b), t=secOf(b);
     const sec=secLabel(d,t);
     return `<div class="lbl">${qrSVG("INV:"+binStr(b))}<div>
@@ -3568,7 +3837,7 @@ cmd.addEventListener("keydown", async e=>{
       const t=line.trim();
       if (t.toLowerCase()==="cancel"){ endMode("cancelled.","a"); return; }
       if (!/^\d$/.test(t)){ print("  enter a digit 0-9 (or 'cancel')","a"); return; }
-      mode.draft.bin=nextFreeBin(+t);
+      mode.draft.bin=await nextFreeBin(+t);
       const d=mode.draft; endMode();
       await commitAdd(d); return;
     }
@@ -3585,7 +3854,7 @@ cmd.addEventListener("keydown", async e=>{
       if (mode.demoLoad){
         endMode();
         if (line.trim().toLowerCase().startsWith("y")){
-          loadDemoData(); await save(); home();
+          await loadDemoData(); await save(); home();
           if (graphMode==="off") setGraph("split");
           g3d=true; setGraphView({kind:"galaxy"});
           print("demo loaded — galaxy open. 'demo clear' to wipe.","g");
@@ -3593,7 +3862,9 @@ cmd.addEventListener("keydown", async e=>{
         drawMirror(); return;
       }
       if (line.trim().toLowerCase().startsWith("y")){
-        state.items=state.items.filter(x=>x!==mode.c);
+        await DB.remove(mode.c.cid);
+        setView(state.items.filter(x=>x!==mode.c));
+        await refreshSummary(); deptCache=null;
         if (mode.c.photo) delPhoto(mode.c.cid);
         logAct(`deleted ${mode.c.name} (was BIN ${mode.c.bin}, qty ${mode.c.qty})`, {type:"del", item:{...mode.c}});
         await save(); print(`deleted ${mode.c.name}.`,"a");
@@ -3774,7 +4045,7 @@ function updateBadge(){
     d.review.forEach(pr=>{ g++; pr.forEach(c=>issueMarks.set(c.cid,"~"+g)); });
     const safe = d.nameFixes.length + d.fldFixes.length + d.exact.reduce((s,x)=>s+x.length-1,0);
     const n = safe + d.review.length;
-    const pcs = state.items.reduce((s,c)=>s+c.qty,0);
+    const pcs = summary.pieces;
     const ap=state.projects?.find(x=>x.pid===state.activePid);
     barl.innerHTML = state.shopName ? `<b>${esc(state.shopName)}</b>` : `<b>INVENTORY</b>`;
     const stale = state.lastBackup && (Date.now()-state.lastBackup > 6048e5);

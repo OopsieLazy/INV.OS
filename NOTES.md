@@ -1307,3 +1307,54 @@ matching, LIKE-wildcard escaping, qty clamping at zero, patch column/value pairi
 values into the wrong columns), undo restoring a deleted item WITH its original CID,
 trigger-maintained counters staying correct across add/stock/move/delete, bulk import
 undoing as one step, and 200 concurrent takes with zero lost updates.
+
+---
+
+# v21.1 — P2: the UI actually talks to the database (and a real UI test harness)
+
+## The gap this closed
+v21.0 shipped an exe that served the UI *and* an API, but the UI ignored the API — it
+still kept everything in browser localStorage. The server was a spectator. Now every
+read is a bounded query and every write is an API call, so the database is genuinely
+the system of record.
+
+## UI test harness (new, and the reason this was safe to attempt)
+`test/ui/smoke.mjs` — launches the real binary, drives the real terminal in headless
+Chromium (playwright-core against the already-installed browser), and asserts on what
+a person would see. 22 checks. Crucially it also reads the server directly afterwards,
+so it proves the typing reached SQLite rather than only the screen:
+add/take/undo arithmetic, move, delete->404, undo restoring the ORIGINAL C-ID, and the
+activity log filling up. Run: `cd test/ui && node smoke.mjs` (`--headed` to watch).
+
+The multi-device promise is now a test: two browser pages, one adds an item, the other
+finds it with no sync step. That is the thing the HTML demo can never do.
+
+## What changed in the UI
+- `DB` — a small API client. `state.items` is no longer the inventory; it is only the
+  rows currently ON SCREEN. `setView()` installs a page, `DB.viewComplete` says whether
+  that window happens to hold everything.
+- Ported to the server: home screen (dept counters), search, resolve, shelf/section/bin
+  views, low, stats, list, map, labels, add (incl. the duplicate check), take/stock,
+  move, delete, undo, activity log, next-free-bin, demo seeding (one bulk insert).
+- `home()` deliberately stayed SYNCHRONOUS, painting from cached aggregates and
+  refreshing behind that. Making it async raced a dozen callers that print or render
+  immediately after it, including bare key handlers.
+- `renderLive()` became async and got a sequence guard: live search now crosses the
+  network per keystroke, so a slow reply for "wid" could otherwise repaint over the
+  reply for "widget". It also asks for an approximate page (top 8 + capped total),
+  which is what the CountCap work in v21.0 was for.
+- `save()` no longer writes inventory anywhere — mutations already went to the database
+  with their log entry in one transaction. It now persists only per-DEVICE preferences
+  (theme, graph settings, HUD), which should NOT be shared between the shop's tablets.
+
+## Refusals instead of silent data loss
+Features whose data has not moved into the database yet are switched OFF with an
+explanation rather than left to accept work that vanishes on reload: projects/BOM,
+build/pick, cycle count, spreadsheet import, the browser-side .db mirror, the old
+sync-server setting, rollback, file auto-backup. Commands that cannot be honest on a
+partial window (doctor, tidy, remap, merge, CSV export) refuse via `needsAll()`.
+This is deliberate: an inventory tool that quietly forgets is worse than one that says no.
+
+## Still to do (roadmap P5-P7)
+Projects/BOM writes need store+API support (reads already exist), then cycle count,
+then wiring the importer to the bulk endpoint that already exists.

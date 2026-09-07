@@ -15,3 +15,7 @@ invos.exe
 # local noise
 .DS_Store
 Thumbs.db
+
+# node deps for the UI tests
+test/ui/node_modules/
+invos-test.exe
