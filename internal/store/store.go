@@ -112,6 +112,9 @@ type BomLine struct {
 	Bin  int    `json:"bin"`  // joined, so a pick list can walk the shelves in order
 	Need int    `json:"need"`
 	Have int    `json:"have"` // joined current stock
+	// Min is joined too, so the graph can colour a BOM part amber when the SHOP is
+	// low on it — which is a different question from whether this build is short.
+	Min int `json:"min"`
 }
 
 // CountEntry is one line of the cycle-count history: what the shelf was expected to

@@ -1771,3 +1771,50 @@ non-cosmetic settings a place to live.
 90 UI checks. The new ones drive it the way a person would: open settings, confirm the
 section and the state, CLICK the row, and require the server to actually close shop
 access and the screen to repaint showing "off" — then click again and require it back on.
+
+---
+
+# v22.8 — visual parity audit against the HTML reference
+
+Ran every visual surface against `component-inventory.html` rather than eyeballing it.
+
+## Identical (no drift)
+- head, CSS and body markup — byte-identical
+- `THEMES` — all six palettes and font stacks
+- every renderer: `gDraw`, `gDraw3D`, `nodeR`, `project`, `gPick`, `drawSweep`
+- camera and sizing: `gDims`, `graphHome`, `popGraph`, `dockGraph`, `hexA`, `themeCol`
+- physics in `gTick` — repulsion, springs, damping, the core-repulsion boost, `gAlpha` decay
+- `SETTINGS` defaults, including **launchZoom 1.8** (the suspicion about launch zoom was
+  unfounded — it is the reference value)
+- orbit maths — `orbitParentMap` / `initOrbits` / `stepOrbits` are functionally identical
+  to `orbit-mock.html`; only whitespace differs
+
+Everything that DID differ was an intended data-source change (server queries instead of
+an in-memory array) or a deliberate fix already recorded: the orbit branch, the galaxy
+setting guard, the label draw guard, `graphItems`.
+
+## One real regression, found and fixed
+Part nodes in the **projects and galaxy views never showed low stock**.
+
+Those nodes are built from BOM lines, not from item rows, and when that path moved to
+the server the lines came back without `min`. `low: c.qty <= c.min` then compares a
+number against `undefined`, which is always false — so nothing ever glowed amber. One
+place had it worse: a hardcoded `min:0`, so a part only counted as low at exactly zero.
+
+This is why it was hard to place. The graph still drew, laid out and animated correctly;
+the only symptom was an absence — the amber that should have been there wasn't.
+
+`min` is now joined onto `BomLine` server-side and carried through every synthetic item
+the BOM path builds. The comment on the field says why it is there, because "why does a
+BOM line carry the shop's reorder minimum" is a fair question.
+
+## Noted, not a bug
+The inventory graph draws at most `GRAPH_ITEM_CAP` (1500) parts, so above that the
+department counts on the graph reflect the sample rather than the whole shop. That is
+deliberate — a force simulation over 100k nodes is not viewable — and the label says
+when it is showing a sample.
+
+## Verified
+91 UI checks. The new one asserts the FLAG rather than the picture: every item the
+database reports as low must have `low === true` on its graph node. Checking "did it
+render" could never have caught this.

@@ -496,6 +496,20 @@ async function runChecks(page, t, consoleErrors) {
     galNodes.proj > 0 && (galNodes.part > 0 || galNodes.shared > 0),
     JSON.stringify(galNodes));
 
+  // Low stock is drawn amber. The BOM lines the galaxy builds its stars from come
+  // from the server, and if they arrive without `min` then qty<=min is always false
+  // and nothing ever glows — a regression you can only see by looking at the flag,
+  // because the graph still renders perfectly.
+  const lowInDb = (await api.get('/api/items?low=1')).rows.map(r => r.cid);
+  const flaggedLow = await page.evaluate(() =>
+    gNodes.filter(n => n.low).map(n => n.id));
+  const lowOnScreen = await page.evaluate((cids) =>
+    gNodes.filter(n => cids.some(c => n.id === 'c' + c)).map(n => ({ id: n.id, low: n.low })),
+    lowInDb);
+  check('a low-stock part in a project is flagged low in the galaxy',
+    lowOnScreen.length === 0 || lowOnScreen.every(n => n.low === true),
+    `low items ${JSON.stringify(lowInDb)}, nodes ${JSON.stringify(lowOnScreen)}, flagged ${JSON.stringify(flaggedLow)}`);
+
   // adding an item must show up in the graph without a reload
   await t.run('add graph canary x1 @4110');
   await page.waitForTimeout(600);

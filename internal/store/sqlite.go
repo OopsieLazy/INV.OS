@@ -1065,7 +1065,7 @@ func (s *SQLite) SharedParts(ctx context.Context) ([]SharedPart, error) {
 // JSON layer emits [] and clients never have to guard against null.
 func (s *SQLite) Bom(ctx context.Context, pid int64) ([]BomLine, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT b.pid, b.cid, i.name, i.bin, b.qty, i.qty
+		SELECT b.pid, b.cid, i.name, i.bin, b.qty, i.qty, i.min
 		  FROM bom b
 		  JOIN items i ON i.cid = b.cid
 		 WHERE b.pid = ?
@@ -1078,7 +1078,7 @@ func (s *SQLite) Bom(ctx context.Context, pid int64) ([]BomLine, error) {
 	out := []BomLine{}
 	for rows.Next() {
 		var l BomLine
-		if err := rows.Scan(&l.PID, &l.CID, &l.Name, &l.Bin, &l.Need, &l.Have); err != nil {
+		if err := rows.Scan(&l.PID, &l.CID, &l.Name, &l.Bin, &l.Need, &l.Have, &l.Min); err != nil {
 			return nil, err
 		}
 		out = append(out, l)

@@ -508,7 +508,7 @@ async function loadProjects(){
     state.projects = list.map((p,i)=>({
       pid: p.pid, name: p.name, status: p.status, notes: p.notes,
       created: p.created, active: p.active,
-      bom: (boms[i]||[]).map(l=>({cid:l.cid, need:l.need, have:l.have, name:l.name, bin:l.bin})),
+      bom: (boms[i]||[]).map(l=>({cid:l.cid, need:l.need, have:l.have, name:l.name, bin:l.bin, min:l.min})),
     }));
     const act = state.projects.find(p=>p.active);
     state.activePid = act ? act.pid : null;
@@ -2071,7 +2071,7 @@ function resolveProj(q){
 function projStats(p){
   let need=0, have=0; const shorts=[];
   p.bom.forEach(l=>{
-    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null;
+    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin, min:l.min} : null;
     const h=c?c.qty:0;
     need+=l.need; have+=Math.min(h,l.need);
     if (h<l.need) shorts.push({l, c, short:l.need-h});
@@ -2086,7 +2086,7 @@ function printProj(p){
     return;
   }
   p.bom.forEach(l=>{
-    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null;
+    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin, min:l.min} : null;
     if (!c){ print(`  ${l.need}x  (part deleted from inventory)`,"a"); return; }
     const ok=c.qty>=l.need;
     print(`  ${(l.need+"x").padEnd(5)}${c.name.slice(0,26).padEnd(28)}have ${String(c.qty).padEnd(5)}BIN ${binStr(c.bin)}  ${ok?"ok":"short "+(l.need-c.qty)}`,
@@ -3332,7 +3332,7 @@ function buildGraphData(){
       addE("SUN","p"+p.pid);
       // this project's parts orbit its own core
       p.bom.forEach(l=>{
-        const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null; if(!c) return;
+        const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin, min:l.min} : null; if(!c) return;
         const nidk="pc"+p.pid+"_"+c.cid;
         addN(nidk,"part",c.name,{cmd:"info "+cidStr(c), low:c.qty<=c.min});
         addE("p"+p.pid, nidk, 1);
@@ -3368,7 +3368,7 @@ function buildGraphData(){
     }));
     Object.entries(partUse).forEach(([cid,pids])=>{
       const l=partInfo[cid]; if(!l) return;
-      const c={cid:+cid, name:l.name, qty:l.have, min:0, bin:l.bin};
+      const c={cid:+cid, name:l.name, qty:l.have, min:l.min, bin:l.bin};
       const shared = pids.length>1;
       addN("c"+c.cid, shared?"shared":"part", c.name,
         {cmd:"info "+cidStr(c), low:c.qty<=c.min, shared});
@@ -3380,7 +3380,7 @@ function buildGraphData(){
     if (!p){ gView={kind:"projects"}; return buildGraphData(); }
     addN("p"+p.pid,"proj",p.name,{cmd:"proj "+p.name, active:true, count:p.bom.length*6});
     p.bom.forEach(l=>{
-      const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null; if(!c) return;
+      const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin, min:l.min} : null; if(!c) return;
       addN("c"+c.cid,"part",`${l.need}x ${c.name}`,
         {cmd:"info "+cidStr(c), low:c.qty<l.need || c.qty<=c.min});
       addE("p"+p.pid,"c"+c.cid, l.need);
