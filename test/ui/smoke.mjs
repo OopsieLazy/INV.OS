@@ -424,6 +424,46 @@ async function runChecks(page, t, consoleErrors) {
   check('rollback lists reversible steps', /ROLLBACK/i.test(await t.screen()));
   await t.key('Escape');
 
+  // ── galaxy and orbit are settings, not forks ──────────────────────────────
+  // The repo used to carry a whole second copy of the app with the galaxy removed.
+  // These checks are what let that fork be deleted: one setting has to neutralise
+  // every entry point (command, view cycle, menu).
+  console.log(String.fromCharCode(10) + 'toggles');
+
+  await t.run('set galaxy 0');
+  check('galaxy can be switched off', (await page.evaluate(() => cfg('galaxy'))) === 0);
+
+  await t.run('graph galaxy');
+  check('graph galaxy falls back to projects when off',
+    (await page.evaluate(() => gView.kind)) === 'projects',
+    'view is ' + (await page.evaluate(() => gView.kind)));
+
+  check('the view cycle skips galaxy when off', await page.evaluate(() => {
+    const seen = new Set();
+    for (let i = 0; i < 6; i++) { cycleView(); seen.add(gView.kind); }
+    return !seen.has('galaxy');
+  }));
+
+  await t.run('menu');
+  check('the galaxy entry is hidden from the command menu',
+    !/projects as a 3D galaxy/i.test(await t.screen()));
+
+  await t.run('set galaxy 1');
+  await t.run('graph galaxy');
+  check('galaxy comes back when switched on',
+    (await page.evaluate(() => gView.kind)) === 'galaxy');
+  await t.run('menu');
+  check('the galaxy entry returns to the menu',
+    /projects as a 3D galaxy/i.test(await t.screen()));
+
+  // orbit is remembered, so it is a deliberate choice rather than a per-session accident
+  await t.run('graph orbit');
+  check('graph orbit records the setting', (await page.evaluate(() => cfg('orbit'))) === 1);
+  await t.run('graph orbit');
+  check('turning orbit off records that too',
+    (await page.evaluate(() => cfg('orbit'))) === 0);
+  await t.key('Escape');
+
   // ── every command runs without throwing ───────────────────────────────────
   // Parity sweep: the exe must not have a command that blows up where the HTML build
   // worked. This does not check what each one DOES — the checks above do that — it

@@ -1519,3 +1519,45 @@ served back, the JSON backup, `/api/db` returning bytes that start with the real
 Plus a COMMAND SWEEP: every command in the app is run and the page must raise no
 error. It does not check what each one does — the checks above do that — it catches the
 class of breakage a port introduces, like a function that now needs an await.
+
+---
+
+# v22.1 — the two side-builds become settings, not forks
+
+## What the two files actually were
+- `component-inventory-no-galaxy.html` — the v20.2 baseline with FOUR changes: a title
+  marker, the galaxy menu entry removed, a `galaxy -> projects` guard in setGraphView,
+  and galaxy dropped from the view cycle. Everything else about it being "different"
+  was just it predating the export/report/png work.
+- `orbit-mock.html` — main plus the ORBIT-SPEC implementation, which is already in
+  (v21.3). Diffed function by function: `orbitParentMap`, `initOrbits` and `stepOrbits`
+  are functionally identical to what shipped; only whitespace differs. Its one extra
+  was a boot autostart that force-loads the demo, opens the galaxy and switches orbits
+  on at every launch — mock scaffolding, deliberately NOT imported.
+
+## Both are now settings
+- `galaxy view` (default ON). Off: the galaxy is unreachable from the command, the view
+  cycle, the HUD button and the demo, and its menu entry is hidden. One `galaxyOn()`
+  helper is the only place that asks, and every entry point funnels through
+  `setGraphView`, so a new entry point cannot miss the guard.
+- `orbit motion` (default OFF, remembered per device). `graph orbit` still toggles it
+  live and now writes the setting, so it is discoverable in `settings` rather than a
+  hidden command, and leaving it on is a deliberate choice about spending the GPU.
+
+This deletes the reason the no-galaxy fork existed. NOTES v20.2 admitted that fork could
+not be rewound to a real pre-galaxy version and had to be re-derived from current code —
+which is exactly the maintenance cost a setting avoids.
+
+## On the CPU question
+Worth recording, because it was the reason for wanting a toggle: the ordinary 3D graph
+ALREADY repaints every frame. The force simulation stops once `gAlpha` decays past
+0.015, but `gDraw()` and the animation-frame reschedule keep running because auto-rotate
+drift is always on. Orbit mode therefore is not a heavier class of work — it replaces
+the physics with `stepOrbits` (O(n) trig, trivial at 1500 nodes) and skips the force
+loop. With orbit off the cost is one boolean check per frame.
+If frames ever need to actually stop, the thing to change is the drift/redraw loop, not
+orbit mode.
+
+## Verified
+66 UI checks (8 new): the galaxy setting neutralises the command, the view cycle and the
+menu, comes back when switched on, and the orbit toggle records itself both ways.

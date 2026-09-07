@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>INV.OS</title>
+<title>INV.OS (no-galaxy fork)</title>
 <meta name="theme-color" content="#0c0c0c">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
@@ -379,188 +379,6 @@ const store = {
   }
 };
 
-/* ── SERVER DATA LAYER (the exe) ────────────────────────────────
-   The app used to keep the WHOLE inventory in memory as one JSON blob and
-   rewrite all of it on every change. That is what broke at volume, so it is
-   gone: the Go binary owns the database and answers bounded queries.
-
-   `state.items` is no longer the inventory. It is only the rows CURRENTLY ON
-   SCREEN — a window. Anything that needs the whole truth (counts, search,
-   duplicate checks) must ask the server through DB, never scan state.items.
-   DB.viewComplete says whether the window happens to hold everything, and
-   commands that cannot work on a partial window check it and say so rather
-   than silently acting on 200 of 40,000 rows. ── */
-const DB = {
-  base: "",
-  async req(method, path, body){
-    const opt = {method, headers:{}};
-    if (body !== undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
-    const r = await fetch(this.base + path, opt);
-    if (r.status === 204) return null;
-    const text = await r.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch(e){ throw new Error("bad response from server"); }
-    if (!r.ok) throw new Error((data && data.error) || ("server error " + r.status));
-    return data;
-  },
-  get(p){ return this.req("GET", p); },
-  post(p,b){ return this.req("POST", p, b===undefined?{}:b); },
-  patch(p,b){ return this.req("PATCH", p, b); },
-  put(p,b){ return this.req("PUT", p, b); },
-  del(p){ return this.req("DELETE", p); },
-
-  /* items -------------------------------------------------------------- */
-  qs(o){
-    const u = new URLSearchParams();
-    for (const [k,v] of Object.entries(o)) if (v!==undefined && v!==null && v!=="") u.set(k,v);
-    const s = u.toString();
-    return s ? "?"+s : "";
-  },
-  // Returns {rows,total,capped} AND parks the rows in the view window so the
-  // existing rendering code keeps working unchanged.
-  async items(opts){
-    const page = await this.get("/api/items"+this.qs(opts));
-    setView(page.rows, page.total);
-    return page;
-  },
-  // A read that must NOT disturb what is on screen (lookups, dup checks).
-  peek(opts){ return this.get("/api/items"+this.qs(opts)); },
-  item(cid){ return this.get("/api/items/"+cid); },
-  add(item){ return this.post("/api/items", item); },
-  bulk(items, source){ return this.post("/api/items/bulk", {items, source}); },
-  edit(cid, patch){ return this.patch("/api/items/"+cid, patch); },
-  remove(cid){ return this.del("/api/items/"+cid); },
-  adjust(cid, delta){ return this.post("/api/items/"+cid+"/qty", {delta}); },
-  nextBin(dept, sec){ return this.get(`/api/bins/next?dept=${dept}&sec=${sec}`); },
-
-  /* layout / summary ---------------------------------------------------- */
-  depts(){ return this.get("/api/depts"); },
-  sections(dept){ return this.get("/api/sections"+(dept>=0?"?dept="+dept:"")); },
-  setDept(n,label){ return this.put("/api/depts/"+n,{label}); },
-  setSection(code,label){ return this.put("/api/sections/"+code,{label}); },
-  stats(){ return this.get("/api/stats"); },
-  log(limit){ return this.get("/api/log?limit="+(limit||20)); },
-  undo(){ return this.post("/api/undo"); },
-  meta(k){ return this.get("/api/meta/"+encodeURIComponent(k)); },
-  setMeta(k,value){ return this.put("/api/meta/"+encodeURIComponent(k), {value}); },
-
-  /* projects ------------------------------------------------------------ */
-  projects(){ return this.get("/api/projects"); },
-  bom(pid){ return this.get("/api/projects/"+pid+"/bom"); },
-  addProject(name){ return this.post("/api/projects", {name}); },
-  editProject(pid, patch){ return this.patch("/api/projects/"+pid, patch); },
-  delProject(pid){ return this.del("/api/projects/"+pid); },
-  activate(pid){ return this.post("/api/projects/"+pid+"/active"); },
-  setBom(pid, cid, need){ return this.put(`/api/projects/${pid}/bom/${cid}`, {need}); },
-  delBom(pid, cid){ return this.del(`/api/projects/${pid}/bom/${cid}`); },
-  sharedParts(){ return this.get("/api/shared-parts"); },
-
-  /* maintenance ---------------------------------------------------------- */
-  // allItems pages through the ENTIRE inventory. This deliberately breaks the
-  // "never hold everything" rule, and it is only for commands the user explicitly
-  // invoked that cannot mean anything on a partial view: doctor, tidy, merge,
-  // remap, export. It is a handful of requests for a real shop, and it reports
-  // progress so a huge inventory does not look frozen.
-  async all(onProgress){
-    const out = [];
-    const PAGE = 1000;
-    for (;;){
-      const page = await this.get("/api/items"+this.qs({limit:PAGE, offset:out.length, sort:"bin"}));
-      out.push(...page.rows);
-      if (onProgress) onProgress(out.length, page.total);
-      if (out.length >= page.total || page.rows.length === 0) break;
-    }
-    return out;
-  },
-  bulkUpdate(patches, what){ return this.post("/api/items/bulk-update", {patches, what}); },
-  merge(keep, drop){ return this.post("/api/items/merge", {keep, drop}); },
-  count(cid, actual, scope){ return this.post(`/api/items/${cid}/count`, {actual, scope:scope||""}); },
-  countLog(limit){ return this.get("/api/countlog?limit="+(limit||100)); },
-  photoIds(){ return this.get("/api/photos"); },
-  putPhoto(cid, dataUrl){ return this.put(`/api/items/${cid}/photo`, {dataUrl}); },
-  delPhoto(cid){ return this.del(`/api/items/${cid}/photo`); },
-  photoURL(cid){ return `/api/items/${cid}/photo`; },
-  exportAll(){ return this.get("/api/export"); },
-
-  viewComplete: true,   // does state.items currently hold every matching row?
-};
-
-/* finishFirstRun records that the shop has been set up. It lives in the database
-   rather than this browser, so the welcome screen does not reappear on the next
-   tablet that opens the app. */
-async function finishFirstRun(){
-  state.firstRun = false;
-  state.seeded = true;
-  try { await DB.setMeta("setup_done","1"); }catch(e){}
-}
-
-/* Projects ARE loaded in full, unlike items. A shop has tens of builds with a
-   handful of part lines each, so the whole set is small and bounded — and holding
-   it lets the graph, galaxy and BOM screens keep working unchanged. Every BOM line
-   arrives with the part's name and live stock already joined on, so nothing here
-   needs to go looking through the item table. */
-async function loadProjects(){
-  try {
-    const list = await DB.projects();
-    const boms = await Promise.all(list.map(p=>DB.bom(p.pid).catch(()=>[])));
-    state.projects = list.map((p,i)=>({
-      pid: p.pid, name: p.name, status: p.status, notes: p.notes,
-      created: p.created, active: p.active,
-      bom: (boms[i]||[]).map(l=>({cid:l.cid, need:l.need, have:l.have, name:l.name, bin:l.bin})),
-    }));
-    const act = state.projects.find(p=>p.active);
-    state.activePid = act ? act.pid : null;
-  } catch(e){
-    print("could not load projects: "+e.message,"a");
-  }
-  return state.projects;
-}
-
-
-/* setView installs a result page as the on-screen window. */
-function setView(rows, total){
-  state.items = rows || [];
-  DB.viewComplete = (total === undefined) || (state.items.length >= total);
-  return state.items;
-}
-
-/* notPorted refuses a command whose data would go nowhere. These features still
-   write to the old in-memory state, which is no longer persisted now that the
-   database is the system of record — so accepting the input would silently lose
-   the user's work on the next reload. Refusing is the honest behavior until each
-   one is moved onto the API. */
-function notPorted(what, next){
-  print(`${what} is not connected to the database yet.`,"a");
-  print(`  Everything it recorded would be lost on the next reload, so it is`,"d");
-  print(`  switched off rather than pretending to work.${next?"  "+next:""}`,"d");
-  return true;
-}
-
-/* loadAll pulls the ENTIRE inventory into the view for one maintenance command.
-   Normal screens are paged — that is the whole point of the exe — but doctor, tidy,
-   merge, remap and export are meaningless on a partial view, so they say what they
-   are doing and read the lot. Returns false if the read failed. */
-async function loadAll(what){
-  let announced = false;
-  try {
-    const rows = await DB.all((got,total)=>{
-      if (total > 2000 && !announced){ announced = true; print(`  reading ${total} items…`,"d"); }
-    });
-    setView(rows, rows.length);
-    return true;
-  } catch(e){
-    print(`${what} could not read the inventory: ${e.message}`,"a");
-    return false;
-  }
-}
-
-/* cached summary so the title bar and home screen do not re-query constantly */
-let summary = {items:0, pieces:0, bins:0, low:0, projects:0, log:0, dbBytes:0};
-async function refreshSummary(){
-  try { summary = await DB.stats(); } catch(e){ /* offline: keep the last figures */ }
-  return summary;
-}
-
 /* ── DATA INTEGRITY ─────────────────────────────────────────────
    Every write is wrapped in a checksummed, versioned envelope and
    mirrored to a second store (localStorage + IndexedDB). Loads verify
@@ -597,30 +415,18 @@ async function idbGet(k){ return idb("readonly", st=>st.get(k)); }
 /* photos live in their own IdB keys ("photo:<cid>") so the main state blob stays
    small and snapshot/checksum-friendly. Item just carries a boolean `photo`. */
 const photoCache={}; let photoTarget=null;
-/* Photos live in the database now, so a picture taken on the phone at the bench is
-   there on the office PC. photoIds is the set of items that HAVE one, fetched once
-   and kept current on write — asking per item would mean a request per row. */
-let photoIds = new Set();
-async function refreshPhotoIds(){
-  try { photoIds = new Set(await DB.photoIds()); }catch(e){}
-  return photoIds;
-}
-function hasPhoto(cid){ return photoIds.has(cid); }
-
 async function getPhoto(cid){
-  if (!photoIds.has(cid)) return null;
-  // the <img> can point straight at the endpoint; no need to inline the bytes
-  return DB.photoURL(cid);
+  if (photoCache[cid]!==undefined) return photoCache[cid];
+  try{ const v=await idbGet("photo:"+cid); photoCache[cid]=v||null; return photoCache[cid]; }
+  catch(e){ return null; }
 }
 async function setPhoto(cid, dataUrl){
-  await DB.putPhoto(cid, dataUrl);
-  photoIds.add(cid);
-  photoCache[cid] = dataUrl;
+  photoCache[cid]=dataUrl;
+  try{ await idbSet("photo:"+cid, dataUrl); }catch(e){}
 }
 async function delPhoto(cid){
-  try { await DB.delPhoto(cid); }catch(e){}
-  photoIds.delete(cid);
   delete photoCache[cid];
+  try{ await idb("readwrite", st=>st.delete("photo:"+cid)); }catch(e){}
 }
 /* downscale any image to a capped data URL before storing */
 function downscaleImage(fileOrBlob, maxDim=640, quality=0.72){
@@ -684,26 +490,9 @@ const esc = s => String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"
 const cidStr = c => "C-"+String(c.cid).padStart(3,"0");
 const clsNum = bin => Math.min(9, Math.max(0, Math.floor(bin/1000)));
 const binStr = bin => String(bin).padStart(4,"0");
-/* Department labels live in the database now. deptCache is the server's copy;
-   state.classes remains as the fallback for the very first paint. */
-const clsLabel = n => (deptCache && deptCache[n] && deptCache[n].label)
-                      || state.classes[n] || DEFAULT_CLASSES[n];
+const clsLabel = n => state.classes[n] || DEFAULT_CLASSES[n];
 
-/* save() no longer writes the inventory anywhere — every mutation already went to
-   the database through DB, synchronously with its log entry. What is left is the
-   per-DEVICE preferences (theme, graph settings, HUD), which should NOT be shared
-   between the shop's tablets, so they stay in this browser. */
 async function save(){
-  try {
-    localStorage.setItem(KEY+"-prefs", JSON.stringify({
-      theme: state.theme, cfg: state.cfg, hud: state.hud,
-      cores: state.cores, activePid: state.activePid,
-    }));
-  } catch(e){ /* private mode: preferences just do not persist */ }
-  updateBadge(); graphSync();
-}
-
-async function saveLegacy(){
   const dataStr = JSON.stringify(state);
   const env = envelope(dataStr);
   lastSaveOk = true;
@@ -718,45 +507,7 @@ async function saveLegacy(){
   if (backupHandle && ++backupDirty>=5) writeBackup();
   if (dbHandle) syncDb(false);   // mirror to the physical .db (batched, best-effort)
 }
-/* load() brings up the shell: device preferences from this browser, everything
-   else from the database. The inventory itself is NOT loaded — it is queried a
-   page at a time, which is the whole point of the exe. */
 async function load(){
-  state = { classes:[...DEFAULT_CLASSES], sections:{...DEFAULT_SECTIONS},
-            projects:[], nextPid:1, items:[], log:[], undo:[],
-            counted:{}, countlog:[], cfg:{} };
-  try {
-    const prefs = JSON.parse(localStorage.getItem(KEY+"-prefs") || "{}");
-    Object.assign(state, prefs);
-  } catch(e){ /* fall through to defaults */ }
-
-  try {
-    const [depts, secs, shop] = await Promise.all([
-      DB.depts(), DB.sections(-1), DB.meta("shop_name"),
-    ]);
-    deptCache = depts;
-    state.classes = depts.map(d=>d.label);
-    state.sections = {};
-    secs.forEach(x=>{ state.sections[x.code] = x.label; });
-    state.shopName = shop.value || "";
-    await refreshSummary();
-    lowDepts = await lowDeptSet();
-    // A brand new database is empty; offer the first-run doors as before.
-    state.firstRun = (await DB.meta("setup_done")).value !== "1";
-    state.seeded = summary.items > 0;
-    state.seededDemo = (await DB.meta("demo")).value === "1";
-  } catch(e){
-    print("cannot reach the server: "+e.message,"a");
-    print("this page is served by the invos program — is it still running?","d");
-  }
-  state.theme ||= "campbell";
-  if (state.cores===undefined) state.cores=true;
-  state.cfg = state.cfg || {};
-  if (state.hud===undefined) state.hud=true;
-  if (state.activePid===undefined) state.activePid=null;
-}
-
-async function loadLegacy(){
   let loaded=false, source="";
   const tryParse=(dataStr)=>{ try{ const o=JSON.parse(dataStr); if(o&&o.items){ state=o; return true; } }catch(e){} return false; };
 
@@ -811,19 +562,7 @@ function logAct(text, undoEntry){
     if (state.undo.length>50) state.undo = state.undo.slice(-50);
   }
 }
-/* Undo is the server's job now: reversing the change and marking the log entry
-   happen in one transaction, so the audit trail can never disagree with the data. */
 async function doUndo(){
-  let res;
-  try { res = await DB.undo(); }
-  catch(e){ print("undo failed: "+e.message,"a"); return false; }
-  if (!res.undone){ print(res.reason || "nothing to undo.","d"); return false; }
-  await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-  print("undone: "+res.entry.text,"g");
-  return true;
-}
-
-async function doUndoLegacy(){
   const e = state.undo.pop();
   if (!e){ print("nothing to undo.","d"); return; }
   const find = cid => state.items.find(c=>c.cid===cid);
@@ -895,13 +634,13 @@ function printRows(list){
 let atHome=false;
 function isHome(){ return atHome; }
 /* ── R11: onboarding — first-run doors, shop-setup wizard, demo separation ── */
-async function renderSectionMgr(dept){
+function renderSectionMgr(dept){
   atHome=false; menuOpen=false; out.innerHTML=""; live.innerHTML=""; browseSel=-1;
   print("SECTIONS","w"); print("");
   print("↵ a row to rename · dept rows: + to add a section · sections: - to clear","d");
   print("");
   for (let n=0;n<10;n++){
-    const items=(await DB.peek({dept:n, limit:1000})).rows;
+    const items=state.items.filter(c=>clsNum(c.bin)===n);
     // department row (editable)
     const d=document.createElement("div"); d.className="line idx g"; d.dataset.menu="run:__secedit "+n;
     [[`  ${n}000  `,"c"],[clsLabel(n).slice(0,26).padEnd(28),null],
@@ -927,21 +666,21 @@ async function renderSectionMgr(dept){
 }
 async function secEditInput(line){
   const c=mode.code, t=line.trim();
-  if (t.toLowerCase()==="cancel"){ endMode(); await renderSectionMgr(); return; }
+  if (t.toLowerCase()==="cancel"){ endMode(); renderSectionMgr(); return; }
   if (c.length===1){ if(t){ const before=clsLabel(+c); state.classes[+c]=t.toUpperCase();
       logAct(`renamed dept ${c}000: ${before} -> ${state.classes[+c]}`,{type:"class",n:+c,before}); await save(); } }
   else { const before=state.sections[c]||null;
     if(t){ state.sections[c]=t.toUpperCase(); logAct(`named section ${c}0`,{type:"section",key:c,before}); }
-    else if(before!==null){ const inUse=(await DB.peek({dept:+c[0], sec:+c[1], limit:1})).total > 0;
+    else if(before!==null){ const inUse=state.items.some(x=>clsNum(x.bin)===+c[0]&&secOf(x.bin)===+c[1]);
       if(inUse){ print("  section has items — can't clear; move them first.","a"); }
       else { delete state.sections[c]; logAct(`cleared section ${c}0`,{type:"section",key:c,before}); } }
     await save();
   }
-  endMode(); await renderSectionMgr();
+  endMode(); renderSectionMgr();
 }
 async function secAddInput(line){
   const t=line.trim().toLowerCase();
-  if (t==="cancel"){ endMode(); await renderSectionMgr(); return; }
+  if (t==="cancel"){ endMode(); renderSectionMgr(); return; }
   if (mode.step===0){
     if(!/^[0-9]$/.test(t)){ print("  pick a digit 0-9","a"); return; }
     mode.digit=t; mode.step=1; setPS1(`  section ${mode.dept}${t}0 name: `); return;
@@ -950,7 +689,7 @@ async function secAddInput(line){
   if (line.trim()){ const before=state.sections[key]||null;
     state.sections[key]=line.trim().toUpperCase();
     logAct(`added section ${key}0`,{type:"section",key,before}); await save(); }
-  endMode(); await renderSectionMgr();
+  endMode(); renderSectionMgr();
 }
 
 function firstRun(){
@@ -998,101 +737,51 @@ async function setupInput(line){
   if (t) m.draft.depts[d]=t.toUpperCase();
   return setupWizard(m.step+1, m.draft);
 }
-/* The demo now seeds the DATABASE (one bulk insert, one undo step) instead of a
-   browser array, so "explore the demo" produces something every device in the shop
-   can see — and `undo` backs the whole thing out. */
-async function loadDemoData(){
-  try {
-    await DB.bulk(SEED.map(c=>({
-      name:c.name, bin:c.bin, qty:c.qty, min:c.min||0,
-      value:c.value||"", pkg:c.pkg||"", part:c.part||"", notes:c.notes||"",
-    })), "demo");
-    await DB.setMeta("demo","1");
-  } catch(e){ print("could not load the demo data: "+e.message,"a"); return; }
-  // Rebuild the demo projects in the database. They deliberately SHARE parts, which
-  // is what gives the galaxy view its bridges between clusters.
-  try {
-    const seeded = (await DB.peek({limit:1000, sort:"bin"})).rows;
-    const byName = {};
-    seeded.forEach(c=>{ byName[norm(c.name)] = c.cid; });
-    // Match on a name prefix as well as exactly, so a small wording difference in the
-    // seed cannot silently drop a BOM line and leave the galaxy missing a bridge.
-    const pick = n => {
-      const k = norm(n);
-      if (byName[k] != null) return byName[k];
-      const hit = seeded.find(c => norm(c.name).startsWith(k));
-      return hit ? hit.cid : null;
-    };
-    const plan = [
-      ["Weather Station","building", [["ESP32 DevKit",1],["OLED Display",1],["Resistor 10kΩ",4],["Jumper Wires M-M",20],["Breadboard 830pt",1]]],
-      ["Robot Arm","planning",       [["Arduino Uno R3",1],["Logic Level Converter",2],["HC-SR04 Ultrasonic",1],["Jumper Wires M-M",15],["Breadboard 830pt",1]]],
-      ["Desk Clock","done",          [["ESP32 DevKit",1],["OLED Display",1],["Capacitor 100µF",2],["Resistor 220Ω",3]]],
-      ["Line Follower","planning",   [["Arduino Uno R3",1],["HC-SR04 Ultrasonic",2],["Resistor 220Ω",4],["Jumper Wires M-M",10]]],
-    ];
-    for (const [name,status,lines] of plan){
-      const np = await DB.addProject(name);
-      if (status!=="planning") await DB.editProject(np.pid, {status});
-      for (const [partName, need] of lines){
-        const cid = pick(partName);
-        if (cid!=null) await DB.setBom(np.pid, cid, need);
-      }
-    }
-    const first = (await DB.projects())[0];
-    if (first) await DB.activate(first.pid);
-  } catch(e){ print("demo projects could not be created: "+e.message,"a"); }
-  await loadProjects();
-  await finishFirstRun();
-  state.seededDemo=true;
-  deptCache=null; await refreshSummary(); lowDepts=await lowDeptSet();
-}
-
-/* home() stays SYNCHRONOUS and paints from cached aggregates, then refreshes them
-   in the background. Making it async instead would have raced every caller that
-   prints or renders straight after it (and there are a dozen, including bare key
-   handlers). The counters are trigger-maintained server-side, so the refresh is a
-   couple of cheap reads no matter how large the inventory is. */
-let deptCache = null;
-let lowDepts = new Set();
-
-async function refreshHome(repaint){
-  try {
-    const [d] = await Promise.all([DB.depts(), refreshSummary()]);
-    deptCache = d;
-    lowDepts = await lowDeptSet();
-  } catch(e){
-    if (deptCache === null){
-      out.innerHTML="";
-      print("cannot reach the server: "+e.message,"a");
-      print("this build is served by the invos program — is it still running?","d");
-      return;
-    }
-  }
-  if (repaint && isHome()) home();
+function loadDemoData(){
+  state.items=JSON.parse(JSON.stringify(SEED)); state.nextCid=SEED.length+1;
+  state.seeded=true; state.seededDemo=true; state.firstRun=false;
+  // seed demo PROJECTS that deliberately SHARE parts, so the galaxy shows bridges.
+  // cids reference the SEED order (1-based): 1 R10k,2 R220,3 C100u,4 C0.1u,5 LLC,
+  // 6 HC-SR04,7 OLED,8 Arduino Uno,9 ESP32,10 Jumpers,11 Breadboard,12 Iron
+  const now=Date.now(), day=864e5;
+  state.projects=[
+    {pid:1,name:"Weather Station", status:"building", created:now-40*day,
+      bom:[{cid:9,need:1},{cid:7,need:1},{cid:1,need:4},{cid:10,need:20},{cid:11,need:1}]},   // ESP32,OLED,R10k,Jumpers,Breadboard
+    {pid:2,name:"Robot Arm", status:"planning", created:now-25*day,
+      bom:[{cid:8,need:1},{cid:5,need:2},{cid:6,need:1},{cid:10,need:15},{cid:11,need:1}]},    // Uno,LLC,HC-SR04,Jumpers,Breadboard
+    {pid:3,name:"Desk Clock", status:"done", created:now-10*day,
+      bom:[{cid:9,need:1},{cid:7,need:1},{cid:3,need:2},{cid:2,need:3}]},                      // ESP32,OLED,C100u,R220
+    {pid:4,name:"Line Follower", status:"planning", created:now-3*day,
+      bom:[{cid:8,need:1},{cid:6,need:2},{cid:2,need:4},{cid:10,need:10}]},                    // Uno,HC-SR04,R220,Jumpers
+  ];
+  state.nextPid=5; state.activePid=1;
+  // give a couple items a low count so the demo shows amber/pulse behaviour
+  const r10=state.items.find(i=>i.cid===1); if(r10) r10.qty=30;   // below min 50
 }
 
 function home(){
   menuOpen=false; atHome=true;
   out.innerHTML=""; live.innerHTML="";
-  setView([], 0);
-  const depts = deptCache || [];
-  if (deptCache === null) refreshHome(true);   // first paint: fill in as soon as it lands
   if (state.seededDemo) print("── DEMO DATA ──  'demo clear' to start real","a");
   if (state.shopName) print(state.shopName,"w");
   print("");
-  const lows = summary.low;
+  const lows = state.items.filter(c=>c.qty<=c.min).length;
   { // Sections: header with the totals inline to the right
+    const totalPcs=state.items.reduce((a,c)=>a+c.qty,0);
+    const binsUsed=new Set(state.items.map(c=>c.bin)).size;
     const d=document.createElement("div"); d.className="line";
     const h=document.createElement("span"); h.className="w"; h.textContent="Sections:";
     const t=document.createElement("span"); t.className="d";
-    t.textContent="   "+summary.items+" components · "+summary.pieces+" pcs · "+summary.bins+" bins";
+    t.textContent="   "+state.items.length+" components · "+totalPcs+" pcs · "+binsUsed+" bins";
     d.appendChild(h); d.appendChild(t); out.appendChild(d);
   }
   for (let n=0;n<10;n++){
-    const dep = depts[n] || {items:0, qty:0};
-    const count = dep.items
-      ? `${String(dep.items).padStart(3)} kinds ${String(dep.qty).padStart(6)} pcs`
+    const items = state.items.filter(c=>clsNum(c.bin)===n);
+    const pcs = items.reduce((s,c)=>s+c.qty,0);
+    const count = items.length
+      ? `${String(items.length).padStart(3)} kinds ${String(pcs).padStart(6)} pcs`
       : "·";
-    const lowHere = lowDepts.has(n);
+    const lowHere = items.some(c=>c.qty<=c.min);
     const d=document.createElement("div");
     d.className="line idx g"; d.dataset.cmd=String(n);
     [[`  ${n}000`,"c"],["  "+clsLabel(n).slice(0,28).padEnd(30),null],[count,"d"],
@@ -1114,48 +803,25 @@ function home(){
   term.scrollTop = 0;
 }
 
-/* Which departments hold something low, for the <LOW> flags on the home screen.
-   One bounded query rather than ten. */
-async function lowDeptSet(){
-  const set = new Set();
-  try {
-    const page = await DB.peek({low:1, limit:500, sort:"bin"});
-    page.rows.forEach(c=>set.add(clsNum(c.bin)));
-  } catch(e){ /* the flags are a nicety; never block the home screen on them */ }
-  return set;
-}
-
 /* ---------- search: token AND-match, unicode-tolerant ---------- */
 const norm = s => String(s).toLowerCase().replace(/µ/g,"u").replace(/Ω/g,"ohm").replace(/ω/g,"ohm");
 function hay(c){ return norm([c.name,c.value,c.pkg,c.part,c.notes,"bin "+c.bin,cidStr(c),
   clsLabel(clsNum(c.bin)), secLabel(clsNum(c.bin),secOf(c.bin))||""].join(" ")); }
-/* search runs on the server. `approx` is set for live typing: it returns the top
-   hits without counting or sorting every match, which is what keeps a keystroke
-   fast on a large inventory. Explicit listings ask for the exact set. */
-async function search(q, opts){
+function search(q){
   const toks = norm(q).split(/\s+/).filter(Boolean);
   if (!toks.length) return [];
-  const o = Object.assign({q, sort:"bin"}, opts||{});
-  try {
-    const page = await DB.peek(o);
-    return page.rows;
-  } catch(e){ print("search failed: "+e.message,"a"); return []; }
+  return state.items.filter(c=>{ const h=hay(c); return toks.every(t=>h.includes(t)); })
+    .sort((a,b)=>a.bin-b.bin || a.name.localeCompare(b.name));
 }
-/* resolve turns whatever the user typed into one item: a C-ID, an exact name, or
-   a unique search hit. It queries the server, so it works on the whole inventory
-   and not just the page on screen. */
-async function resolve(q){
+function resolve(q){
   if (!q) return {err:"give a name or C-ID"};
-  const m = String(q).trim().match(/^c-?(\d+)$/i);
-  if (m){
-    try { return {c: await DB.item(parseInt(m[1],10))}; }
-    catch(e){ return {err:`no component with id ${q.toUpperCase()}`}; }
-  }
-  const hits = await search(q, {limit:50});
-  const exact = hits.filter(c=>norm(c.name)===norm(q));
+  const byId = state.items.find(c=>cidStr(c).toLowerCase()===q.toLowerCase());
+  if (byId) return {c:byId};
+  const exact = state.items.filter(c=>norm(c.name)===norm(q));
   if (exact.length===1) return {c:exact[0]};
-  if (hits.length===1) return {c:hits[0]};
-  if (hits.length>1) return {many:hits};
+  const part = search(q);
+  if (part.length===1) return {c:part[0]};
+  if (part.length>1) return {many:part};
   return {err:`no component matches "${q}"`};
 }
 /* command menu — browsable like a section. each entry either runs (run:)
@@ -1181,7 +847,6 @@ const MENU = [
   {k:"build",  d:"take a whole project's parts",     fill:"build "},
   {k:"graph",  d:"the node graph (split view)",      run:"graph"},
   {k:"graph 3d",d:"3D holographic node graph (F3)",   run:"graph 3d"},
-  {k:"galaxy", d:"projects as a 3D galaxy of clusters", run:"graph galaxy"},
   {k:"demo",   d:"load sample data + open the galaxy",  run:"demo"},
   {k:"theme",  d:"change the terminal look",          run:"theme"},
   {k:"settings",d:"graph & display settings",         run:"settings"},
@@ -1190,9 +855,7 @@ const MENU = [
   {k:"doctor", d:"find duplicates & messy entries",  run:"doctor"},
   {k:"recent", d:"activity log",                     run:"recent"},
   {k:"undo",   d:"reverse the last change",          run:"undo"},
-  {k:"export", d:"CSV · export xlsx / full / report / photos", run:"export"},
-  {k:"export xlsx",d:"full inventory to Excel (.xlsx)", run:"export full"},
-  {k:"graph png",d:"save the current graph as an image", run:"graph png"},
+  {k:"export", d:"back up as CSV",                   run:"export"},
   {k:"import", d:"import a spreadsheet (xlsx/xls/ods/csv)", run:"import"},
   {k:"template",d:"download a blank import template",  run:"template"},
   {k:"backup", d:"auto-backup to a file",            run:"backup"},
@@ -1236,9 +899,7 @@ function menu(filter){
   out.innerHTML=""; live.innerHTML=""; browseSel=-1;
   print("COMMANDS","w"); print("");
   const f=(filter||"").trim().toLowerCase();
-  const rows=MENU
-    .filter(m=>m.k!=="galaxy" || galaxyOn())
-    .filter(m=>!f || m.k.includes(f) || m.d.toLowerCase().includes(f));
+  const rows=MENU.filter(m=>!f || m.k.includes(f) || m.d.toLowerCase().includes(f));
   if (!rows.length){ print("  no command matches \""+esc(filter)+"\"","d"); term.scrollTop=0; return; }
   rows.forEach(m=>{
     const d=document.createElement("div");
@@ -1260,12 +921,10 @@ function focusHeader(crumb){
   print("");
 }
 
-async function listClass(n){
+function listClass(n){
   focusHeader(`${n}000  ${clsLabel(n)}`);
-  const page = await DB.items({dept:n, sort:"bin", limit:1000});
-  const items = page.rows;
-  if (page.capped || page.total > items.length)
-    print(`  showing ${items.length} of ${page.total} — narrow it with a section digit, e.g. ${n}1`,"d");
+  const items=state.items.filter(c=>clsNum(c.bin)===n)
+    .sort((a,b)=>a.bin-b.bin||a.name.localeCompare(b.name));
   if (!items.length){ print("  empty shelf — add something: add <name>","d"); term.scrollTop=0; return; }
   let last=-1;
   items.forEach(c=>{
@@ -1278,22 +937,22 @@ async function listClass(n){
   });
   term.scrollTop=0;
 }
-async function listSection(d,t){
+function listSection(d,t){
   const lbl=secLabel(d,t);
   focusHeader(`${d}${t}00  ${clsLabel(d)}${lbl?"  /  "+lbl:""}`);
-  const page = await DB.items({dept:d, sec:t, sort:"bin", limit:1000});
-  const items = page.rows;
+  const items=state.items.filter(c=>clsNum(c.bin)===d && secOf(c.bin)===t)
+    .sort((a,b)=>a.bin-b.bin||a.name.localeCompare(b.name));
   if (!items.length){ print("  empty section — add something: add <name>","d"); term.scrollTop=0; return; }
   printRows(items);
   term.scrollTop=0;
 }
-/* The database picks the next free bin — it is the only thing that can see every
-   bin already in use. Falls back to the first bin of the section if the server is
-   unreachable, which at least keeps `add` usable. */
-async function nextFreeBin(n, sec){
-  const d = (sec===undefined || sec===null) ? 1 : sec;
-  try { return (await DB.nextBin(n, d)).bin; }
-  catch(e){ return n*1000 + d*100 + 10; }
+function nextFreeBin(n, sec){
+  const used = new Set(state.items.map(c=>c.bin));
+  if (sec!==undefined && sec!==null)
+    for (let b=n*1000+sec*100+1; b<n*1000+sec*100+100; b++) if(!used.has(b)) return b;
+  for (let b=n*1000+101; b<n*1000+1000; b++) if(!used.has(b)) return b;
+  for (let b=n*1000; b<n*1000+101; b++) if(!used.has(b)) return b;
+  return n*1000+101;
 }
 /* ---------- name tidier: consistent wording, units, casing ---------- */
 const ACRONYMS = new Set("led oled lcd tft ic usb jst pir rtc smd tht mcu pcb i2c spi uart rgb ws2812b hdmi gpio adc dac pwm ntc ptc ir rf bt".split(" "));
@@ -1396,7 +1055,7 @@ function secOf(bin){ return Math.floor(bin/100)%10; }
 function secLabel(d,t){ return state.sections?.[""+d+t] || null; }
 async function infoCard(c){
   const n = clsNum(c.bin), low = c.qty<=c.min, sl=secLabel(n,secOf(c.bin));
-  const photo = hasPhoto(c.cid) ? await getPhoto(c.cid) : null;
+  const photo = c.photo ? await getPhoto(c.cid) : null;
   const safeUrl=u=>{ u=String(u).trim();
     if (/^(https?:)?\/\//i.test(u)) return u.replace(/^\/\//,"https://");
     if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(u)) return "https://"+u;   // bare domain
@@ -1452,36 +1111,22 @@ async function countInput(line){
   if (t==="skip"||t==="s"){ m.idx++; countStep(); return; }
   let actual = t==="" ? c.qty : parseInt(t,10);
   if (isNaN(actual)||actual<0){ print("  number, blank to confirm, 'skip', or 'stop'","a"); countStep(); return; }
-  m.checked++;
-  const was = c.qty;
-  // The count is booked server-side: the corrected quantity, the counted-at stamp and
-  // the discrepancy row all land in one transaction, and it is a single undo step.
-  try {
-    const updated = await DB.count(c.cid, actual, m.scope||"");
-    c.qty = updated.qty;
-  } catch(e){ print("  could not record the count: "+e.message,"a"); }
-  if (actual!==was){
-    m.fixed++;
+  m.checked++; state.counted[c.cid]=Date.now();
+  if (actual!==c.qty){
+    state.countlog.push({ts:Date.now(), cid:c.cid, name:c.name, expected:c.qty, actual});
+    if (state.countlog.length>500) state.countlog=state.countlog.slice(-500);
+    logAct(`count: ${c.name} ${c.qty} → ${actual} (Δ${actual-c.qty})`, {type:"edit", before:{...c}});
+    c.qty=actual; m.fixed++;
     print(`  corrected → ${actual}${actual<=c.min?"  <LOW>":""}`, actual<=c.min?"a":"g");
     if (actual<=c.min) print(`  ⚠ now at/below min (${c.min}) — reorder`,"a");
   } else print("  ok","g");
-  await refreshSummary(); deptCache=null; updateBadge();
-  m.idx++; countStep();
+  await save(); m.idx++; countStep();
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
-/* Live search now crosses the network on every keystroke, which introduces a
-   hazard the in-memory version did not have: a slow reply for "wid" can land
-   after the reply for "widget" and repaint stale results. liveSeq stamps each
-   run and a stale one throws its results away.
-
-   It asks for an approximate page — the top 8 plus a capped total — so the
-   server never counts or sorts thousands of matches for a keystroke. */
-let liveSeq = 0;
-async function renderLive(){
-  const seq = ++liveSeq;
+function renderLive(){
   if (mode.type!=="normal"){ live.innerHTML=""; return; }
   const t = cmd.value.trim();
   live.innerHTML="";
@@ -1497,10 +1142,7 @@ async function renderLive(){
     el.textContent=`  ↵ opens ${what}`;
     live.appendChild(el); return;
   }
-  const page = await DB.peek({q:t, limit:8, approx:1, sort:"bin"}).catch(()=>null);
-  if (seq !== liveSeq) return;              // a newer keystroke superseded this one
-  if (!page){ return; }
-  const r = page.rows;
+  const r = search(t);
   if (!r.length){
     liveItems=[]; liveSel=-1;
     const el=document.createElement("div"); el.className="line d";
@@ -1515,9 +1157,8 @@ async function renderLive(){
     el.dataset.i=i;
     live.appendChild(el);
   });
-  const more = page.total - liveItems.length;
   const tail=document.createElement("div"); tail.className="line d";
-  tail.textContent = (more>0 ? `  +${more}${page.capped?"+":""} more · ` : `  `)
+  tail.textContent = (r.length>8?`  +${r.length-8} more · `:`  `)
     + (liveSel>=0 ? "↵ info · ^↵ take · ⇧↵ stock · p project" : "↓ select");
   live.appendChild(tail);
   term.scrollTop = term.scrollHeight;
@@ -1536,19 +1177,14 @@ function parseQuickAdd(rest){
   }
   return {name:name.join(" "), qty, bin};
 }
-/* The server assigns the permanent CID and writes the row; the log entry and its
-   undo record are written in the same transaction, so an add can never end up
-   half-recorded. */
 async function commitAdd(draft){
-  let saved;
-  try { saved = await DB.add(draft); }
-  catch(e){ print("could not save: "+e.message,"a"); return; }
-  await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-  const n = clsNum(saved.bin);
-  const sl=secLabel(n,secOf(saved.bin));
-  print(`saved ${saved.name} -> BIN ${binStr(saved.bin)} (${clsLabel(n)}${sl?" / "+sl:""}) qty ${saved.qty}  ${cidStr(saved)}`,"g");
-  print(`  details anytime: edit ${cidStr(saved)}`,"d");
-  return saved;
+  state.items.push(draft); state.nextCid++;
+  logAct(`added ${draft.name} -> BIN ${draft.bin} qty ${draft.qty}`, {type:"add", cid:draft.cid});
+  await save();
+  const n = clsNum(draft.bin);
+  const sl=secLabel(n,secOf(draft.bin));
+  print(`saved ${draft.name} -> BIN ${binStr(draft.bin)} (${clsLabel(n)}${sl?" / "+sl:""}) qty ${draft.qty}  ${cidStr(draft)}`,"g");
+  print(`  details anytime: edit ${cidStr(draft)}`,"d");
 }
 function askClassFor(draft){
   mode={type:"pickclass", draft};
@@ -1801,32 +1437,18 @@ async function importMapInput(line){
     const {items,skipped}=w.preview;
     if (!items.length){ print("nothing to import.","a"); return; }
     snapshotUndo(`import ${items.length} items from ${w.src}`);
-    const draftRows=[];
-    // Rows without a bin are filed by guessing the department from the name, then
-    // taking the next free bin in it. Bins are handed out here rather than per row on
-    // the server so a batch of the same kind of part does not all land in one bin.
-    const nextFree={};
+    const newCids=[];
     for (const it of items){
       let bin=it.bin;
-      if (!bin){
-        const g=guessClass(it.name) || {d:0, s:1};
-        const key=g.d+"|"+g.s;
-        if (nextFree[key]===undefined) nextFree[key]=await nextFreeBin(g.d, g.s);
-        bin=nextFree[key]++;
-      }
-      draftRows.push({name:tidyName(it.name), bin,
+      if (!bin){ const g=guessClass(it.name); bin = g?nextFreeBin(g.d,g.s):nextFreeBin(0); }
+      const draft={cid:state.nextCid++, name:tidyName(it.name), bin,
         qty:it.qty||0, min:it.min||1, value:it.value||"", pkg:it.pkg||"", part:it.part||"",
-        supplier:it.supplier||"", source:it.source||"", link:it.link||"", notes:it.notes||""});
+        supplier:it.supplier||"", source:it.source||"", link:it.link||"", notes:it.notes||""};
+      state.items.push(draft); newCids.push(draft.cid);
     }
-    let added=0;
-    try {
-      // one transaction, one log entry: the whole sheet undoes as a single step
-      const res=await DB.bulk(draftRows, w.src);
-      added=res.added;
-    } catch(e){ print("import failed: "+e.message,"a"); importWiz=null; endMode(); return; }
-    importWiz=null;
-    await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-    endMode(`imported ${added} item${added===1?"":"s"}${skipped.length?`, skipped ${skipped.length}`:""}. checkup: doctor`,"g");
+    logAct(`imported ${items.length} items (${w.src})`, {type:"import", cids:newCids});
+    importWiz=null; await save();
+    endMode(`imported ${items.length} item${items.length===1?"":"s"}${skipped.length?`, skipped ${skipped.length}`:""}. checkup: doctor`,"g");
     return;
   }
   if (tl==="header on"||tl==="header off"){
@@ -1877,102 +1499,6 @@ async function importCSV(text){
   if (added) print("  checkup: doctor","d");
 }
 
-/* Full Excel export via SheetJS (bundled, loaded on demand). `full` adds a sheet per
-   area: sections, projects with their BOMs, the activity log and the count history.
-   Everything is read from the database, not from whatever is on screen. */
-async function exportXlsx(full){
-  const X=await loadSheetJS();
-  if (!X){ print("couldn't load the spreadsheet engine (xlsx.full.min.js).","a"); return; }
-  if (!await loadAll("export")) return;
-  const wb=X.utils.book_new();
-  const itemRows=[["ID","Name","Dept","Section","Bin","Qty","Min","Low","Value","Package",
-    "Part #","Supplier","Source","Link","Notes"]];
-  state.items.slice().sort((a,b)=>a.bin-b.bin).forEach(c=>itemRows.push([
-    cidStr(c), c.name, clsLabel(clsNum(c.bin)), secLabel(clsNum(c.bin),secOf(c.bin))||"",
-    binStr(c.bin), c.qty, c.min, c.qty<=c.min?"LOW":"", c.value||"", c.pkg||"",
-    c.part||"", c.supplier||"", c.source||"", c.link||"", c.notes||""]));
-  X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(itemRows), "Items");
-  if (full){
-    const secRows=[["Code","Department/Section"]];
-    for (let d=0;d<10;d++){ secRows.push([d+"000", clsLabel(d)]);
-      Object.keys(state.sections||{}).filter(k=>+k[0]===d).sort().forEach(k=>secRows.push([k+"0", state.sections[k]])); }
-    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(secRows), "Sections");
-
-    await loadProjects();
-    const projRows=[["Project","Status","Created","Part ID","Part","Need","Have"]];
-    (state.projects||[]).forEach(p=>{
-      const when=p.created?new Date(p.created).toISOString().slice(0,10):"";
-      if (!p.bom.length) projRows.push([p.name,p.status||"",when,"","","",""]);
-      p.bom.forEach(l=>projRows.push([p.name,p.status||"",when,
-        "C-"+String(l.cid).padStart(3,"0"), l.name||"(deleted)", l.need, l.have]));
-    });
-    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(projRows), "Projects");
-
-    const logRows=[["Time","Action"]];
-    try { (await DB.log(1000)).rows.slice().reverse()
-      .forEach(l=>logRows.push([new Date(l.ts).toISOString(), l.text])); }catch(e){}
-    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(logRows), "Activity");
-
-    const cRows=[["Time","ID","Name","Expected","Actual","Delta"]];
-    try { (await DB.countLog(1000)).forEach(e=>cRows.push([new Date(e.ts).toISOString(),
-      "C-"+String(e.cid).padStart(3,"0"), e.name, e.expected, e.actual, e.actual-e.expected])); }catch(e){}
-    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(cRows), "Counts");
-  }
-  const out2=X.write(wb,{type:"array",bookType:"xlsx"});
-  dlBytes(new Uint8Array(out2), `inventory-${new Date().toISOString().slice(0,10)}.xlsx`);
-  try { await DB.setMeta("last_export", String(Date.now())); }catch(e){}
-  print(`exported ${full?"full workbook (Items · Sections · Projects · Activity · Counts)":"Items"} to .xlsx — opens in Excel/Sheets.`,"g");
-}
-
-/* printable/PDF summary report via the print stylesheet */
-async function exportReport(){
-  if (!await loadAll("the report")) return;
-  const total=state.items.reduce((s,c)=>s+c.qty,0);
-  const bins=new Set(state.items.map(c=>c.bin)).size;
-  const lows=state.items.filter(c=>c.qty<=c.min);
-  const val=state.items.reduce((s,c)=>{ const v=parseFloat(String(c.value).replace(/[^0-9.]/g,"")); return s+(isNaN(v)?0:v*c.qty); },0);
-  const esc2=x=>String(x).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-  $("printsheet").innerHTML =
-    `<h1>INVENTORY REPORT${state.shopName?" — "+esc2(state.shopName):""}</h1>`
-    +`<p>${new Date().toLocaleString()}</p>`
-    +`<table><tr><th>Metric</th><th>Value</th></tr>`
-    +`<tr><td>Components</td><td>${state.items.length}</td></tr>`
-    +`<tr><td>Total on hand</td><td>${total}</td></tr>`
-    +`<tr><td>Bins used</td><td>${bins}</td></tr>`
-    +`<tr><td>Low stock</td><td>${lows.length}</td></tr>`
-    +(val?`<tr><td>Est. value (qty×value)</td><td>${val.toFixed(2)}</td></tr>`:"")
-    +`</table>`
-    +(lows.length?`<h1 style="font-size:13pt;margin-top:10pt">LOW STOCK</h1><table><tr><th>ID</th><th>Name</th><th>Bin</th><th>Qty</th><th>Min</th></tr>`
-      +lows.sort((a,b)=>a.bin-b.bin).map(c=>`<tr><td>${cidStr(c)}</td><td>${esc2(c.name)}</td><td class="bin">${binStr(c.bin)}</td><td>${c.qty}</td><td>${c.min}</td></tr>`).join("")+`</table>`:"")
-    +`<p class="foot">INV.OS · print or Save as PDF</p>`;
-  window.print();
-  print("report sent to print — choose 'Save as PDF' in the print dialog.","g");
-}
-
-/* export item photos (sequential downloads) */
-async function exportPhotos(){
-  await refreshPhotoIds();
-  const ids=[...photoIds];
-  if (!ids.length){ print("no item photos to export.","d"); return; }
-  print(`exporting ${ids.length} photo(s)…`,"d");
-  for (const cid of ids){
-    try {
-      const r2=await fetch(DB.photoURL(cid));
-      if (!r2.ok) continue;
-      const blob=await r2.blob();
-      let name="item";
-      try { name=(await DB.item(cid)).name; }catch(e){}
-      const a=document.createElement("a");
-      a.href=URL.createObjectURL(blob);
-      a.download="C-"+String(cid).padStart(3,"0")+"-"+name.replace(/[^a-z0-9]+/gi,"_").slice(0,30)+".jpg";
-      a.click();
-      setTimeout(()=>URL.revokeObjectURL(a.href),2000);
-      await new Promise(r=>setTimeout(r,150));
-    } catch(e){ /* one bad photo should not stop the batch */ }
-  }
-  print("photos exported.","g");
-}
-
 /* ---------- projects / BOM ---------- */
 function resolveProj(q){
   if (!q) return {err:"which project? — proj new <name>"};
@@ -1986,7 +1512,7 @@ function resolveProj(q){
 function projStats(p){
   let need=0, have=0; const shorts=[];
   p.bom.forEach(l=>{
-    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null;
+    const c=state.items.find(i=>i.cid===l.cid);
     const h=c?c.qty:0;
     need+=l.need; have+=Math.min(h,l.need);
     if (h<l.need) shorts.push({l, c, short:l.need-h});
@@ -2001,7 +1527,7 @@ function printProj(p){
     return;
   }
   p.bom.forEach(l=>{
-    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null;
+    const c=state.items.find(i=>i.cid===l.cid);
     if (!c){ print(`  ${l.need}x  (part deleted from inventory)`,"a"); return; }
     const ok=c.qty>=l.need;
     print(`  ${(l.need+"x").padEnd(5)}${c.name.slice(0,26).padEnd(28)}have ${String(c.qty).padEnd(5)}BIN ${binStr(c.bin)}  ${ok?"ok":"short "+(l.need-c.qty)}`,
@@ -2024,9 +1550,9 @@ async function exec(line){
 
   if (/^\d{1,4}$/.test(t)){
     const n=parseInt(t,10);
-    if (t.length===1){ await listClass(n); return; }
-    if (t.length===2){ await listSection(Math.floor(n/10), n%10); return; }
-    const binHit=(await DB.items({bin:n, sort:"bin"})).rows;
+    if (t.length===1){ listClass(n); return; }
+    if (t.length===2){ listSection(Math.floor(n/10), n%10); return; }
+    const binHit=state.items.filter(c=>c.bin===n);
     if (binHit.length){
       const d=clsNum(n), sc=secOf(n), sl=secLabel(d,sc);
       focusHeader(`BIN ${binStr(n)}  ${clsLabel(d)}${sl?"  /  "+sl:""}`);
@@ -2065,92 +1591,76 @@ async function exec(line){
     }
 
     case "rollback": {
-      // The old build kept checksummed snapshots of a JSON blob. The database keeps a
-      // transactional log instead, so rolling back IS repeated undo — same capability,
-      // and every step is a real, reversible transaction rather than a whole-state swap.
-      const n = parseInt(rest.trim(), 10);
-      if (!rest.trim() || isNaN(n)){
-        out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
-        print("ROLLBACK","w"); print("");
-        let L=[];
-        try { L=(await DB.log(15)).rows; }catch(e){ print(e.message,"a"); return; }
-        const open2=L.filter(e=>e.undoable && !e.undone);
-        if (!open2.length){ print("  nothing to roll back — no reversible changes yet.","d"); return; }
-        print("  recent reversible changes, newest first:","d"); print("");
-        open2.forEach((e,i)=>print(`  ${String(i+1).padStart(2)}  ${new Date(e.ts).toLocaleString()}  ${e.text}`,"g"));
-        print("");
-        print("  roll back N steps:  rollback 3      one step:  undo","d");
+      const snaps=await readSnapshots();
+      const usable=snaps.filter(sn=>checksum(sn.data)===sn.sum);
+      if (usable.length<2){ print("no earlier snapshot to roll back to yet.","a"); return; }
+      if (rest.toLowerCase()!=="confirm"){
+        print("ROLLBACK — recent saved states (newest first):","w");
+        usable.slice().reverse().slice(0,MAX_SNAPS).forEach((sn,i)=>{
+          let n=0; try{ n=JSON.parse(sn.data).items.length; }catch(e){}
+          print(`  ${i===0?"● now ":"  #"+i+"  "}${new Date(sn.ts).toLocaleString()}  (${n} items)`, i===0?"d":"g");
+        });
+        print("roll back one step:  rollback confirm","d");
         return;
       }
-      if (n<1){ print("rollback <how many steps>","a"); return; }
-      let done=0;
-      for (let i=0;i<n;i++){
-        let res;
-        try { res=await DB.undo(); }catch(e){ print("stopped: "+e.message,"a"); break; }
-        if (!res.undone){ print(`  nothing left to undo after ${done} step${done===1?"":"s"}.`,"d"); break; }
-        print(`  reversed: ${res.entry.text}`,"g");
-        done++;
-      }
-      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-      if (done) print(`rolled back ${done} step${done===1?"":"s"}.`,"a");
+      // restore the second-newest (one step back)
+      const prev=usable[usable.length-2];
+      snapshotUndo("rollback to "+new Date(prev.ts).toLocaleString());
+      try{ state=JSON.parse(prev.data); }catch(e){ print("snapshot unreadable.","a"); return; }
+      await save(); home();
+      print("rolled back to "+new Date(prev.ts).toLocaleString()+". (undo reverses this)","a");
       return;
     }
 
     case "db": case "database": {
       const a=rest.trim().toLowerCase();
-      if (a==="export"||a==="save"||a==="download"){
-        // a consistent copy taken with SQLite's own VACUUM INTO — safe to run while
-        // the shop is working, and it opens in any SQLite tool
-        print("preparing a copy of the database…","d");
-        try {
-          const r2=await fetch("/api/db");
-          if (!r2.ok) throw new Error("server said "+r2.status);
-          const blob=await r2.blob();
-          const url=URL.createObjectURL(blob);
-          const el=document.createElement("a");
-          el.href=url; el.download=`invos-${new Date().toISOString().slice(0,10)}.db`;
-          el.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
-          print(`invos.db downloaded (${(blob.size/1048576).toFixed(1)} MB) — opens in DB Browser, sqlite3, Python or Excel.`,"g");
-        } catch(e){ print("could not download the database: "+e.message,"a"); }
+      if (a==="off"){ dbHandle=null; await idb("readwrite",st=>st.delete("dbhandle")); print("physical db sync off (browser storage still primary).","d"); return; }
+      if (a==="export"||a==="save"){ const bytes=await buildDbBytes(); if(!bytes){ print("couldn't load SQLite engine.","a"); return; } dlBytes(bytes,"invos-"+new Date().toISOString().slice(0,10)+".db"); print("invos.db exported — open it in any SQLite tool.","g"); return; }
+      if (a==="now"||a==="sync"){ const okk=await syncDb(true); print(okk?"synced to invos.db.":"no physical db attached — run 'db'","g"); return; }
+      if (!a){
+        out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
+        print("PHYSICAL DATABASE","w"); print("");
+        if (dbHandle){ print("  attached — invos.db auto-syncs on save","g");
+          print("  last sync "+(dbLastSync?Math.round((Date.now()-dbLastSync)/1000)+"s ago":"pending"),"d"); }
+        else print("  not attached — browser storage is holding your data","d");
+        print("");
+        print("  a real SQLite file you own, openable in DB Browser / sqlite3 / Python / Excel.","d");
+        print("  db            attach a .db file (Chromium auto-syncs; else downloads)","d");
+        print("  db export     download a .db snapshot now","d");
+        print("  db now        force a sync   ·   db off   stop syncing","d");
         return;
       }
-      out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
-      print("DATABASE","w"); print("");
-      try {
-        const info=await DB.get("/api/server");
-        print("  file   "+info.dbPath,"g");
-        print("  size   "+(info.dbBytes/1048576).toFixed(1)+" MB","d");
-      } catch(e){ print("  (could not reach the server: "+e.message+")","a"); }
-      print("");
-      print("  This is a real SQLite file and it is the live database — not a mirror,","d");
-      print("  not an export. Every change is written to it as it happens.","d");
-      print("");
-      print("  db export     download a consistent copy right now","d");
-      print("  backup        download everything as JSON instead","d");
-      return;
+      await attachDb(); return;
     }
 
     case "server": {
-      out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
-      print("SERVER","w"); print("");
-      let info=null;
-      try { info=await DB.get("/api/server"); }
-      catch(e){ print("  could not reach the server: "+e.message,"a"); return; }
-      print("  This build IS the server — the app you are looking at is served by it,","d");
-      print("  and it owns the database. There is nothing to connect to.","d");
-      print("");
-      print("  version  "+info.version,"d");
-      (info.urls||[]).forEach((u,i)=>print((i?"           ":"  open at ")+u, i?"d":"g"));
-      print("  auth     "+(info.tokenSet?"token required (X-INVOS-Token)":"none"), info.tokenSet?"g":"d");
-      print("");
-      if (info.lan){
-        print("  Other devices in the shop can open the addresses above and they will be","d");
-        print("  looking at THIS inventory — same database, live.","d");
-        if (!info.tokenSet) print("  anyone on this network can edit inventory — restart with -token to require one","a");
-      } else {
-        print("  Only this machine can reach it. To let the shop's tablets and phones in,","d");
-        print("  restart with:   invos -lan        (optionally  -token <secret>)","d");
+      const a=rest.trim();
+      if (!a){
+        out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
+        print("SERVER SYNC","w"); print("");
+        if (SERVER.on()){
+          print("  url    "+SERVER.url(),"g");
+          print("  token  "+(SERVER.token()?"set":"none"),"d");
+          print("  status "+(serverLive?"reachable":"unreachable — running local"),serverLive?"g":"a");
+          print(""); print("  data syncs to the server AND stays local (offline-safe).","d");
+          print("  server off        stop syncing (stays fully local)","d");
+        } else {
+          print("  no server — this is your local, offline, you-own-it app.","g");
+          print(""); print("  connect one:  server https://host:8137 [token]","d");
+          print("  (optional — only for multi-station / central-db setups)","d");
+        }
+        return;
       }
+      if (a.toLowerCase()==="off"){
+        try{ localStorage.removeItem("invos-server-url"); localStorage.removeItem("invos-server-token"); }catch(e){}
+        serverLive=false; print("server sync off — fully local again.","g"); return;
+      }
+      const parts=a.split(/\s+/);
+      try{ localStorage.setItem("invos-server-url", parts[0]);
+        if (parts[1]) localStorage.setItem("invos-server-token", parts[1]); }catch(e){}
+      // test it
+      try{ await SERVER.getState(); serverLive=true; print("connected to "+parts[0]+" — syncing. (reload to pull server data)","g"); }
+      catch(e){ serverLive=false; print("saved, but couldn't reach "+parts[0]+" yet — will retry; stays local meanwhile.","a"); }
       return;
     }
 
@@ -2238,9 +1748,8 @@ async function exec(line){
   \u21b5                  open the selected row (or run the typed command)
   ^\u21b5 take \u00b7 \u21e7\u21b5 stock \u00b7 p add to project  \u2014 on the selected row
   /                    open the command menu       tab (typing)  complete
-  alt+h                recenter the graph (graph home)   graph 3d/2d/style
-  alt+g                switch graph view: inventory / projects / galaxy
-  graph orbit          let the galaxy revolve (a show mode; off by default)
+  h                    recenter the graph (graph home)   graph 3d/2d/style
+  g                    switch graph view: inventory / projects / galaxy
   f1 menu · f2 doctor · f3 3d graph · theme (change the look)
   ^u ^w ^k  clear line / word / to-end     ^a ^e  start / end
   pgup pgdn  scroll        f1  command menu`,"g");
@@ -2250,13 +1759,13 @@ async function exec(line){
     case "home": case "clear": case "cls": home(); return;
 
     case "find": case "f": {
-      const r=await search(rest, {limit:200});
+      const r=search(rest);
       r.length ? printRows(r) : print(`no components match "${rest}"`,"a");
       return;
     }
 
     case "info": {
-      const r=await resolve(rest);
+      const r=resolve(rest);
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ printRows(r.many); return; }
       await infoCard(r.c); return;
@@ -2267,17 +1776,15 @@ async function exec(line){
       const p=parseQuickAdd(rest);
       if (!p.name){ print("needs a name: add 10k resistor x50","a"); return; }
       const name=tidyName(p.name);
-      // duplicate check against the WHOLE inventory, not just what is on screen
-      const dupHits = await search(name, {limit:20});
-      const dup = dupHits.find(c=>norm(c.name)===norm(name));
+      const dup = state.items.find(c=>norm(c.name)===norm(name));
       if (dup){ print(`already exists: ${dup.name} in BIN ${dup.bin} — did you mean: stock ${cidStr(dup)} ${p.qty}`,"a"); return; }
-      const draft={name, qty:p.qty, min:1, value:"", pkg:"", part:"", notes:""};
+      const draft={cid:state.nextCid, name, qty:p.qty, min:1, value:"", pkg:"", part:"", notes:""};
       const done=async()=>{ await commitAdd(draft);
         if (name!==p.name.trim()) print(`  tidied from "${p.name.trim()}"`,"d"); };
       if (p.bin!==null){ draft.bin=p.bin; await done(); return; }
       const g=guessClass(name);
       if (g){
-        draft.bin=await nextFreeBin(g.d, g.s);
+        draft.bin=nextFreeBin(g.d, g.s);
         await done();
         if (secOf(draft.bin)!==g.s || clsNum(draft.bin)!==g.d)
           print(`  ~ section ${g.d}${g.s}00 is full — filed in BIN ${binStr(draft.bin)} instead`,"a");
@@ -2286,17 +1793,19 @@ async function exec(line){
       askClassFor(draft); return;
     }
 
-    case "__fr_import": await finishFirstRun(); await exec("import"); return;
+    case "__fr_import": state.firstRun=false; await save(); await exec("import"); return;
     case "__fr_go": {
-      await finishFirstRun(); home();
+      state.items=[]; state.nextCid=1; state.seeded=true; state.seededDemo=false; state.firstRun=false;
+      await save(); home();
       print("ready. default sections are set — add an item: add 10k resistor x50 · rename shelves anytime: sections","g");
       return;
     }
     case "__fr_fresh": {
-      await finishFirstRun(); setupWizard(0); return;
+      state.items=[]; state.nextCid=1; state.seeded=true; state.seededDemo=false; state.firstRun=false;
+      await save(); setupWizard(0); return;
     }
     case "__fr_demo": {
-      await loadDemoData(); home();
+      loadDemoData(); await save(); home();
       print("demo loaded — opening the project galaxy…","d");
       if (graphMode==="off") setGraph("split");
       g3d=true; setGraphView({kind:"galaxy"});
@@ -2321,7 +1830,7 @@ async function exec(line){
           mode={type:"confirm", c:null, demoLoad:true};
           setPS1(`load DEMO data over your current inventory? [y/n] `); return;
         }
-        await loadDemoData(); await save(); home();
+        loadDemoData(); await save(); home();
         print("demo loaded — opening the galaxy…","d");
         if (graphMode==="off") setGraph("split");
         g3d=true; setGraphView({kind:"galaxy"});
@@ -2337,7 +1846,7 @@ async function exec(line){
       const del=rest.match(/^(\d{2})\s+(clear|del|delete|-|x|remove)$/i);
       if (del){
         const key=del[1];
-        const inUse=(await DB.peek({dept:+key[0], sec:+key[1], limit:1})).total > 0;
+        const inUse=state.items.some(c=>clsNum(c.bin)===+key[0]&&secOf(c.bin)===+key[1]);
         if (inUse){ print(`section ${key}0 has items — move or remove them first (open ${key}).`,"a"); return; }
         const before=state.sections[key]||null;
         if (before===null){ print(`section ${key}0 has no custom name.`,"d"); return; }
@@ -2362,7 +1871,7 @@ async function exec(line){
       return;
     }
     case "sections": case "shelves": {
-      await renderSectionMgr();
+      renderSectionMgr();
       return;
     }
 
@@ -2387,7 +1896,7 @@ async function exec(line){
 
     case "map": case "classes": {
       for (let n=0;n<10;n++){
-        const items=(await DB.peek({dept:n, limit:1000})).rows;
+        const items=state.items.filter(c=>clsNum(c.bin)===n);
         print(`  ${n}000  ${clsLabel(n).slice(0,26).padEnd(28)}${items.length?String(items.length).padStart(3)+" items":"  ·"}`,
               "g", String(n));
         const secs=new Set(items.map(c=>secOf(c.bin)));
@@ -2403,42 +1912,35 @@ async function exec(line){
       return;
     }
     case "remap": {
-      if (!await loadAll("remap")) return;
       const m=rest.match(/^(\d{1,4})\s+(\d{1,4})$/);
       if (!m){ print("renumber:  remap 1 3 (dept) · remap 15 35 (section) · remap 1501 3501 (bin)","d"); return; }
       const [a,b]=[m[1],m[2]];
       if (a.length!==b.length){ print("both numbers must be the same length","a"); return; }
       const hits=state.items.filter(c=>binStr(c.bin).startsWith(a));
       if (!hits.length){ print(`no bins under ${a}…`,"a"); return; }
-      let moved=0;
-      try {
-        const res = await DB.bulkUpdate(
-          hits.map(c=>({cid:c.cid, patch:{bin: parseInt(b+binStr(c.bin).slice(a.length),10)}})),
-          `remap ${a}xx -> ${b}xx`);
-        moved = res.changed;
-      } catch(e){ print("could not remap: "+e.message,"a"); return; }
-      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-      print(`moved ${moved} entr${moved===1?"y":"ies"}: ${a}… -> ${b}…  (one undo reverts)`,"g");
+      snapshotUndo(`remap ${a}xx -> ${b}xx (${hits.length} entries)`);
+      hits.forEach(c=>{ c.bin=parseInt(b+binStr(c.bin).slice(a.length),10); });
+      await save();
+      print(`moved ${hits.length} entr${hits.length===1?"y":"ies"}: ${a}… -> ${b}…  (undo reverts)`,"g");
       return;
     }
 
     case "move": {
       const m=rest.match(/^(.*?)\s+@?(\d{1,4})$/);
       if (!m){ print("usage: move <name|C-ID> <bin>","a"); return; }
-      const r=await resolve(m[1].trim());
+      const r=resolve(m[1].trim());
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
-      let moved;
-      try { moved = await DB.edit(r.c.cid, {bin: parseInt(m[2],10)}); }
-      catch(e){ print("could not move it: "+e.message,"a"); return; }
-      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-      const n=clsNum(moved.bin), sl=secLabel(n,secOf(moved.bin));
-      print(`${moved.name} -> BIN ${binStr(moved.bin)} (${clsLabel(n)}${sl?" / "+sl:""})`,"g");
+      { const from=r.c.bin; r.c.bin=parseInt(m[2],10);
+        logAct(`moved ${r.c.name} BIN ${binStr(from)} -> ${binStr(r.c.bin)}`, {type:"move", cid:r.c.cid, from}); }
+      await save();
+      const n=clsNum(r.c.bin), sl=secLabel(n,secOf(r.c.bin));
+      print(`${r.c.name} -> BIN ${binStr(r.c.bin)} (${clsLabel(n)}${sl?" / "+sl:""})`,"g");
       return;
     }
 
     case "edit": {
-      const r=await resolve(rest);
+      const r=resolve(rest);
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       startEdit(r.c); return;
@@ -2447,7 +1949,7 @@ async function exec(line){
     case "del": case "rm": {
       const bm=rest.match(/^(?:bin\s+)?(\d{3,4})$/);
       if (bm){
-        const b=parseInt(bm[1],10), its=(await DB.peek({bin:b, limit:1000})).rows;
+        const b=parseInt(bm[1],10), its=state.items.filter(c=>c.bin===b);
         if (its.length>1){
           printRows(its);
           mode={type:"confirmbin", bin:b, items:its};
@@ -2455,7 +1957,7 @@ async function exec(line){
           return;
         }
       }
-      const r=await resolve(rest);
+      const r=resolve(rest);
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       mode={type:"confirm", c:r.c};
@@ -2465,33 +1967,33 @@ async function exec(line){
 
     case "take": case "add-stock": case "stock": {
       const m=rest.match(/^(.*?)(?:\s+(\d+))?$/);
-      const r=await resolve(m[1].trim());
+      const r=resolve(m[1].trim());
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       const n=parseInt(m[2]||"1",10);
-      // One atomic statement on the server. Two people taking from the same bin at
-      // the same moment both get counted; a read-modify-write here would lose one.
-      const before = r.c.qty;
-      let after;
-      try { after = await DB.adjust(r.c.cid, v==="take" ? -n : n); }
-      catch(e){ print("could not update stock: "+e.message,"a"); return; }
-      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
       if (v==="take"){
-        const taken = before - after.qty;
-        print(`took ${taken} × ${after.name} from BIN ${after.bin} — ${after.qty} left${taken<n?` (only had ${taken})`:""}`,
-              after.qty<=after.min?"a":"g");
-        if (after.qty<=after.min) print(`  <LOW> at/below minimum (${after.min})`,"a");
+        const taken=Math.min(n,r.c.qty);
+        r.c.qty-=taken;
+        if (taken>0) logAct(`took ${taken} x ${r.c.name} (BIN ${r.c.bin})`, {type:"take", cid:r.c.cid, n:taken});
+        await save();
+        print(`took ${taken} × ${r.c.name} from BIN ${r.c.bin} — ${r.c.qty} left${taken<n?` (only had ${taken})`:""}`,
+              r.c.qty<=r.c.min?"a":"g");
+        if (r.c.qty<=r.c.min) print(`  <LOW> at/below minimum (${r.c.min})`,"a");
       } else {
-        print(`added ${n} × ${after.name} to BIN ${after.bin} — now ${after.qty}`,"g");
+        r.c.qty+=n;
+        logAct(`stocked ${n} x ${r.c.name} (BIN ${r.c.bin})`, {type:"stock", cid:r.c.cid, n});
+        await save();
+        print(`added ${n} × ${r.c.name} to BIN ${r.c.bin} — now ${r.c.qty}`,"g");
       }
       return;
     }
 
     case "list": case "ls": case "l": case "bins": {
-      if (/^\d$/.test(rest)){ await listClass(+rest); return; }
+      if (/^\d$/.test(rest)){ listClass(+rest); return; }
       let shown=0;
       for (let n=0;n<10;n++){
-        const items=(await DB.peek({dept:n, sort:"bin", limit:1000})).rows;
+        const items=state.items.filter(c=>clsNum(c.bin)===n)
+          .sort((a,b)=>a.bin-b.bin||a.name.localeCompare(b.name));
         if (!items.length) continue;
         print(`${n}00  ${clsLabel(n)}`,"w");
         printRows(items); shown+=items.length;
@@ -2503,14 +2005,14 @@ async function exec(line){
     }
 
     case "low": {
-      const lowQ = {low:1, sort:"bin", limit:1000};
+      let lows=state.items.filter(c=>c.qty<=c.min);
       let scope="";
-      if (/^\d$/.test(rest)){ lowQ.dept=+rest; scope=` in ${clsLabel(+rest)}`; }
+      if (/^\d$/.test(rest)){ lows=lows.filter(c=>clsNum(c.bin)===+rest); scope=` in ${clsLabel(+rest)}`; }
       else if (/^\d\d$/.test(rest)){
-        lowQ.dept=+rest[0]; lowQ.sec=+rest[1];
+        lows=lows.filter(c=>clsNum(c.bin)===+rest[0] && secOf(c.bin)===+rest[1]);
         scope=` in ${secLabel(+rest[0],+rest[1])||rest+"00"}`;
       }
-      const lows=(await DB.items(lowQ)).rows;
+      lows.sort((a,b)=>a.bin-b.bin);
       if(!lows.length){ print(`nothing low${scope} — stock is healthy.`,"g"); return; }
       print("LOW STOCK"+scope.toUpperCase(),"w");
       lows.forEach(c=>print(`  ${c.name.slice(0,26).padEnd(28)}BIN ${binStr(c.bin).padEnd(7)}qty ${c.qty} / min ${c.min}`,"a","info "+cidStr(c)));
@@ -2518,7 +2020,6 @@ async function exec(line){
     }
 
     case "proj": case "project": {
-      await loadProjects();
       const toks0=rest.split(/\s+/);
       const sub=(toks0[0]||"").toLowerCase();
       const r2=rest.slice((toks0[0]||"").length).trim();
@@ -2537,10 +2038,10 @@ async function exec(line){
       if (sub==="new"){
         if (!r2){ print("proj new <name>","a"); return; }
         if (state.projects.some(p=>p.name.toLowerCase()===r2.toLowerCase())){ print("project already exists.","a"); return; }
-        let np;
-        try { np = await DB.addProject(r2); await DB.activate(np.pid); }
-        catch(e){ print("could not create the project: "+e.message,"a"); return; }
-        await loadProjects(); graphSync();
+        projSnap(`created project ${r2}`);
+        state.projects.push({pid:state.nextPid++, name:r2, status:"planning", bom:[], created:Date.now()});
+        state.activePid=state.nextPid-1;
+        await save();
         print(`project ${r2} created and active — proj add ${r2} 2x <part>, or select any row and press p`,"g");
         return;
       }
@@ -2553,24 +2054,21 @@ async function exec(line){
           if (/^x\d+$/i.test(t)){ qty=parseInt(t.slice(1),10); return false; }
           return true;
         }).join(" ");
-        const rr=await resolve(query); if (rr.err){ print(rr.err,"a"); return; }
+        const rr=resolve(query); if (rr.err){ print(rr.err,"a"); return; }
         if (rr.many){ print("be more specific:","a"); printRows(rr.many); return; }
+        projSnap(`bom: +${qty}x ${rr.c.name} -> ${pr.p.name}`);
         const line=pr.p.bom.find(l=>l.cid===rr.c.cid);
-        const want=(line?line.need:0)+qty;
-        try { await DB.setBom(pr.p.pid, rr.c.cid, want); }
-        catch(e){ print("could not update the parts list: "+e.message,"a"); return; }
-        await loadProjects(); graphSync();
-        printProj(resolveProj(pr.p.name).p || pr.p); return;
+        if (line) line.need+=qty; else pr.p.bom.push({cid:rr.c.cid, need:qty});
+        await save(); printProj(pr.p); return;
       }
       if (sub==="rm"||sub==="remove"){
         const t2=r2.split(/\s+/);
         const pr=resolveProj(t2[0]); if (pr.err){ print(pr.err,"a"); return; }
-        const rr=await resolve(t2.slice(1).join(" ")); if (rr.err){ print(rr.err,"a"); return; }
+        const rr=resolve(t2.slice(1).join(" ")); if (rr.err){ print(rr.err,"a"); return; }
         if (rr.many){ print("be more specific:","a"); printRows(rr.many); return; }
-        try { await DB.delBom(pr.p.pid, rr.c.cid); }
-        catch(e){ print("could not remove it: "+e.message,"a"); return; }
-        await loadProjects(); graphSync();
-        printProj(resolveProj(pr.p.name).p || pr.p); return;
+        projSnap(`bom: removed ${rr.c.name} from ${pr.p.name}`);
+        pr.p.bom=pr.p.bom.filter(l=>l.cid!==rr.c.cid);
+        await save(); printProj(pr.p); return;
       }
       if (sub==="shop"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
@@ -2586,17 +2084,15 @@ async function exec(line){
         const pname = sub==="done" ? r2 : t2.join(" ");
         if (!["planning","building","done"].includes(stt)){ print("status: planning | building | done","a"); return; }
         const pr=resolveProj(pname); if (pr.err){ print(pr.err,"a"); return; }
-        try { await DB.editProject(pr.p.pid, {status:stt}); }
-        catch(e){ print("could not change the status: "+e.message,"a"); return; }
-        await loadProjects(); graphSync();
-        print(`${pr.p.name} -> [${stt}]`,"g"); return;
+        projSnap(`${pr.p.name} status -> ${stt}`);
+        pr.p.status=stt; await save(); print(`${pr.p.name} -> [${stt}]`,"g"); return;
       }
       if (sub==="del"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
-        try { await DB.delProject(pr.p.pid); }
-        catch(e){ print("could not delete it: "+e.message,"a"); return; }
-        await loadProjects(); graphSync();
-        print(`project ${pr.p.name} deleted. (undo restores it and its parts list)`,"a"); return;
+        projSnap(`deleted project ${pr.p.name}`);
+        state.projects=state.projects.filter(p=>p!==pr.p);
+        if (state.activePid===pr.p.pid) state.activePid=null;
+        await save(); print(`project ${pr.p.name} deleted. (undo restores)`,"a"); return;
       }
       if (sub==="print"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
@@ -2607,18 +2103,15 @@ async function exec(line){
       }
       if (sub==="use"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
-        try { await DB.activate(pr.p.pid); } catch(e){ print(e.message,"a"); return; }
-        await loadProjects(); graphSync();
+        state.activePid=pr.p.pid; await save();
         print(`${pr.p.name} is now active — p on any selected row adds to it`,"g"); return;
       }
       const pr=resolveProj(rest); if (pr.err){ print(pr.err,"a"); return; }
-      try { await DB.activate(pr.p.pid); } catch(e){ print(e.message,"a"); return; }
-      await loadProjects(); graphSync();
-      printProj(resolveProj(pr.p.name).p || pr.p); return;
+      state.activePid=pr.p.pid; await save();
+      printProj(pr.p); return;
     }
 
     case "build": {
-      await loadProjects();
       const t2=rest.split(/\s+/);
       const partial=t2[t2.length-1]?.toLowerCase()==="partial";
       const pname=partial?t2.slice(0,-1).join(" "):rest;
@@ -2631,21 +2124,17 @@ async function exec(line){
         print(`proj shop ${pr.p.name} for the buy list · or: build ${pr.p.name} partial`,"d");
         return;
       }
-      // Each line is its own atomic decrement on the server. A build is therefore
-      // several log entries rather than one — which is the honest record of what
-      // happened, and each step is individually reversible.
+      snapshotUndo(`built ${pr.p.name}${partial?" (partial)":""}`);
       let taken=0;
-      for (const l of pr.p.bom){
-        const t3=Math.min(l.need, l.have);
-        if (t3<=0) continue;
-        try { await DB.adjust(l.cid, -t3); taken+=t3; }
-        catch(e){ print(`could not take ${l.name}: ${e.message}`,"a"); }
-      }
-      try { await DB.editProject(pr.p.pid, {status:"building"}); }catch(e){}
-      await loadProjects(); await refreshSummary(); deptCache=null; updateBadge(); graphSync();
+      pr.p.bom.forEach(l=>{
+        const c=state.items.find(i=>i.cid===l.cid); if(!c) return;
+        const t3=Math.min(l.need,c.qty); c.qty-=t3; taken+=t3;
+      });
+      pr.p.status="building";
+      await save();
       print(`built ${pr.p.name} — took ${taken} pcs across ${pr.p.bom.length} BOM line${pr.p.bom.length===1?"":"s"}. (one undo returns everything)`,"g");
       print(`  paper pick list: proj print ${pr.p.name}`,"d");
-      const lows=summary.low;
+      const lows=state.items.filter(c=>c.qty<=c.min).length;
       if (lows) print(`  ${lows} part${lows===1?"":"s"} now low — 'low'`,"a");
       return;
     }
@@ -2672,22 +2161,6 @@ async function exec(line){
     }
 
     case "backup": {
-      // The database is the system of record, so a backup is a snapshot of it rather
-      // than a mirror the app has to keep writing. This pulls the whole shop as one
-      // JSON document — items, layout, projects with BOMs, activity and counts.
-      print("building a backup…","d");
-      try {
-        const dump=await DB.exportAll();
-        const blob=new Blob([JSON.stringify(dump,null,1)],{type:"application/json"});
-        const url=URL.createObjectURL(blob);
-        const a2=document.createElement("a");
-        a2.href=url; a2.download=`invos-backup-${new Date().toISOString().slice(0,10)}.json`;
-        a2.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
-        await DB.setMeta("last_backup", String(Date.now()));
-        print(`backup saved — ${dump.items.length} items, ${dump.projects.length} projects.`,"g");
-        print(`  the live database file itself is listed by 'health'.`,"d");
-      } catch(e){ print("backup failed: "+e.message,"a"); }
-      return;
       if (rest.toLowerCase()==="off"){
         backupHandle=null; await idb("readwrite", st=>st.delete("file"));
         print("auto-backup off.","d"); updateBadge(); return;
@@ -2709,14 +2182,15 @@ async function exec(line){
 
     case "labels": case "label": {
       let bins=[];
-      const binQuery = async o => [...new Set((await DB.peek(Object.assign({limit:1000, sort:"bin"}, o))).rows.map(c=>c.bin))].sort((a,b)=>a-b);
-      if (!rest) bins=await binQuery({});
-      else if (/^\d$/.test(rest)) bins=await binQuery({dept:+rest});
-      else if (/^\d\d$/.test(rest)) bins=await binQuery({dept:+rest[0], sec:+rest[1]});
+      if (!rest) bins=[...new Set(state.items.map(c=>c.bin))].sort((a,b)=>a-b);
+      else if (/^\d$/.test(rest))
+        bins=[...new Set(state.items.filter(c=>clsNum(c.bin)===+rest).map(c=>c.bin))].sort((a,b)=>a-b);
+      else if (/^\d\d$/.test(rest))
+        bins=[...new Set(state.items.filter(c=>clsNum(c.bin)===+rest[0]&&secOf(c.bin)===+rest[1]).map(c=>c.bin))].sort((a,b)=>a-b);
       else if (/^\d{3,4}$/.test(rest)) bins=[parseInt(rest,10)];
       else { print("labels · labels 1 (dept) · labels 15 (section) · label 1101 (one bin)","d"); return; }
       if (!bins.length){ print("no bins in that range yet.","a"); return; }
-      await labelSheet(bins);
+      labelSheet(bins);
       print(`${bins.length} label${bins.length===1?"":"s"} sent to print — 62×29 mm with QR codes. any printer works; a label printer's driver will fit them to its media.`,"g");
       return;
     }
@@ -2725,12 +2199,15 @@ async function exec(line){
 
     case "count": {
       const a=rest.trim().toLowerCase();
-      if (a==="report"){
+      let items=[...state.items]; let scope="all";
+      if (/^\d$/.test(a)){ items=items.filter(c=>clsNum(c.bin)===+a); scope=clsLabel(+a); }
+      else if (/^\d\d$/.test(a)){ items=items.filter(c=>clsNum(c.bin)===+a[0]&&secOf(c.bin)===+a[1]); scope=secLabel(+a[0],+a[1])||a; }
+      else if (a==="due"){ const cutoff=Date.now()-30*864e5;
+        items=items.filter(c=>!(state.counted[c.cid])||state.counted[c.cid]<cutoff); scope="due (30d+)"; }
+      else if (a==="report"){
         out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
         print("COUNT HISTORY","w"); print("");
-        let L=[];
-        try { L=await DB.countLog(50); }
-        catch(e){ print("could not read the count history: "+e.message,"a"); return; }
+        const L=state.countlog.slice(-25).reverse();
         if(!L.length){ print("  no counts logged yet — run 'count'","d"); return; }
         const p2=x=>String(x).padStart(2,"0");
         L.forEach(e=>{ const d=new Date(e.ts); const diff=e.actual-e.expected;
@@ -2738,20 +2215,8 @@ async function exec(line){
             diff===0?"g":"a"); });
         return;
       }
-      // The scope is a QUERY, so counting one shelf walks that shelf whatever its size
-      // instead of filtering whatever happened to be on screen.
-      const cq={sort:"bin", limit:1000};
-      let scope="all";
-      if (/^\d$/.test(a)){ cq.dept=+a; scope=clsLabel(+a); }
-      else if (/^\d\d$/.test(a)){ cq.dept=+a[0]; cq.sec=+a[1]; scope=secLabel(+a[0],+a[1])||a; }
-      let items=(await DB.peek(cq)).rows;
-      if (a==="due"){
-        // never counted, or not counted in the last 30 days (counted_at is on the item)
-        const cutoff=Date.now()-30*864e5;
-        items=items.filter(c=>!c.counted || c.counted<cutoff); scope="due (30d+)";
-      }
       if (!items.length){ print("nothing to count in that scope.","d"); return; }
-      items.sort((x,y)=>((x.counted||0)-(y.counted||0)) || x.bin-y.bin);
+      items.sort((x,y)=>((state.counted[x.cid]||0)-(state.counted[y.cid]||0)) || x.bin-y.bin);
       mode={type:"count", queue:items, idx:0, scope, fixed:0, checked:0};
       print(`CYCLE COUNT — ${scope} · ${items.length} items · blank=confirm · number=correct · skip · stop`,"w");
       countStep();
@@ -2759,11 +2224,11 @@ async function exec(line){
     }
 
     case "photo": {
-      const r=await resolve(rest.replace(/\s+(rm|remove|clear|del)$/i,""));
+      const r=resolve(rest.replace(/\s+(rm|remove|clear|del)$/i,""));
       if (r.err){ print(r.err,"a"); return; }
       if (r.many){ print("be more specific:","a"); printRows(r.many); return; }
       if (/\s(rm|remove|clear|del)$/i.test(rest)){
-        await delPhoto(r.c.cid);
+        await delPhoto(r.c.cid); r.c.photo=false; await save();
         print(`photo removed from ${cidStr(r.c)}.`,"d"); return;
       }
       // open a hidden file input (accepts camera on mobile via capture)
@@ -2783,32 +2248,6 @@ async function exec(line){
       if (ml==="style"){ gStyle = gStyle==="holo"?"clean":"holo"; print(`graph style: ${gStyle==="holo"?"holographic glow":"clean minimal"}`,"d"); return; }
       if (ml==="hud"){ hudOn=!hudOn; state.hud=hudOn; updateHud(); await save(); print(`HUD frame ${hudOn?"on":"off"}`,"d"); return; }
       if (ml==="sweep"){ sweepT=performance.now(); print("sweep","d"); return; }
-      if (["png","image","snapshot","shot"].includes(ml)){
-        if (graphMode==="off"){ print("open the graph first (graph / graph galaxy), then: graph png","a"); return; }
-        const cv = gPopped() ? gPopCanvas : gc;
-        if (!cv){ print("no graph canvas to export.","a"); return; }
-        cv.toBlob(b=>{ if(!b){ print("couldn't capture the graph.","a"); return; }
-          const el=document.createElement("a"); el.href=URL.createObjectURL(b);
-          el.download=`graph-${gView.kind}-${new Date().toISOString().slice(0,10)}.png`;
-          el.click(); setTimeout(()=>URL.revokeObjectURL(el.href),1000);
-          print("graph saved as PNG.","g");
-        },"image/png");
-        return;
-      }
-      if (["orbit","orbits","planets","spin"].includes(ml)){
-        gOrbit = !gOrbit; gOrbitInit = false;
-        setCfg("orbit", gOrbit ? 1 : 0); await save();   // remembered per device
-        if (gOrbit && gView.kind!=="galaxy" && gView.kind!=="projects") setGraphView({kind:"galaxy"});
-        if (gOrbit && graphMode==="off") setGraph("split");
-        gAlpha = Math.max(gAlpha, 0.6);   // re-heat, so it settles then takes off
-        print(gOrbit
-          ? "orbit mode ON — parts revolve around their project, projects wheel around the sun"
-          : "orbit mode off — back to the static force graph","d");
-        print(gOrbit
-          ? "  it repaints continuously; 'graph orbit' again stops it. remembered on this device."
-          : "  also in 'settings' as orbit motion.","d");
-        return;
-      }
       if (["home","reset","center","recenter"].includes(ml)){ graphHome(); print("view recentered.","d"); return; }
       if (ml==="off"){ if (gPopped()) dockGraph("off"); else setGraph("off"); return; }
       if (ml==="full"){ setGraph("full"); print("graph full — esc for split.","d"); return; }
@@ -2823,13 +2262,6 @@ async function exec(line){
       else if (["projects","proj","projs"].includes(ml)){
         if (graphMode==="off") setGraph("split");
         setGraphView({kind:"projects"});
-      }
-      else if (["galaxy","universe","clusters"].includes(ml) && !galaxyOn()){
-        print("the galaxy view is switched off — showing projects instead.","a");
-        print("  turn it on in 'settings' (galaxy view), or: set galaxy 1","d");
-        if (graphMode==="off") setGraph("split");
-        setGraphView({kind:"projects"});
-        return;
       }
       else if (["galaxy","universe","clusters"].includes(ml)){
         if (!state.projects.length){ print("no projects yet — the galaxy needs projects. proj new <name>","a"); return; }
@@ -2856,21 +2288,14 @@ async function exec(line){
     }
 
     case "tidy": {
-      if (!await loadAll("tidy")) return;
       const props = state.items.map(c=>({c, after:tidyName(c.name)})).filter(x=>x.after!==x.c.name);
       if (!props.length){ print("nothing to tidy — names are already consistent.","g"); return; }
       if (rest.toLowerCase()==="apply"){
-        // one request, one transaction, one undo entry — renaming 400 items must not
-        // cost 400 presses of undo to reverse
-        let n=0;
-        try {
-          const res = await DB.bulkUpdate(
-            props.map(x=>({cid:x.c.cid, patch:{name:x.after}})),
-            `tidied ${props.length} name${props.length===1?"":"s"}`);
-          n = res.changed;
-        } catch(e){ print("could not apply: "+e.message,"a"); return; }
-        await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-        print(`tidied ${n} name${n===1?"":"s"}. (one undo reverts the whole batch)`,"g");
+        const namesUndo = props.map(x=>({cid:x.c.cid, before:x.c.name}));
+        props.forEach(x=>x.c.name=x.after);
+        logAct(`tidied ${props.length} name${props.length===1?"":"s"}`, {type:"tidy", names:namesUndo});
+        await save();
+        print(`tidied ${props.length} name${props.length===1?"":"s"}. (undo to revert)`,"g");
         return;
       }
       print("PROPOSED CLEANUP  (dry run — nothing changed yet)","w");
@@ -2880,33 +2305,18 @@ async function exec(line){
     }
 
     case "doctor": case "normalize": case "fsck": {
-      if (!await loadAll("the database doctor")) return;
       const d=doctorScan();
       const issues=d.nameFixes.length+d.fldFixes.length+d.exact.length;
       if (!issues && !d.review.length){ print("database clean — no duplicates or messy entries.","g"); return; }
       if (rest.toLowerCase()==="apply"){
         if (!issues){ print("nothing to auto-fix. review items need manual 'merge'.","a"); return; }
-        // Names and fields go in one bulk write; each duplicate merge is its own
-        // transaction because merging moves stock and BOM lines as well as text.
-        const patches=new Map();
-        const add=(cid,patch)=>patches.set(cid, Object.assign(patches.get(cid)||{}, patch));
-        d.nameFixes.forEach(x=>add(x.c.cid, {name:x.after}));
-        d.fldFixes.forEach(x=>x.f.forEach(f=>add(x.c.cid, {[f.k]: f.after})));
-        let fixed=0, merged=0;
-        try {
-          if (patches.size){
-            const res=await DB.bulkUpdate(
-              [...patches].map(([cid,patch])=>({cid,patch})),
-              `doctor: cleaned ${patches.size} entr${patches.size===1?"y":"ies"}`);
-            fixed=res.changed;
-          }
-          for (const g of d.exact){
-            for (let i=1;i<g.length;i++){ await DB.merge(g[0].cid, g[i].cid); merged++; }
-          }
-        } catch(e){ print("could not apply everything: "+e.message,"a"); }
-        await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-        print(`fixed: ${fixed} entr${fixed===1?"y":"ies"} cleaned, merged ${merged} duplicate${merged===1?"":"s"}.`,"g");
-        print(`  undo reverses the merges one at a time, then the cleanup in one step.`,"d");
+        snapshotUndo(`doctor: fixed ${issues} issue${issues===1?"":"s"}`);
+        d.nameFixes.forEach(x=>x.c.name=x.after);
+        d.fldFixes.forEach(x=>x.f.forEach(f=>x.c[f.k]=f.after));
+        let merged=0;
+        d.exact.forEach(g=>{ for (let i=1;i<g.length;i++){ mergeInto(g[0],g[i]); merged++; } });
+        await save();
+        print(`fixed: ${d.nameFixes.length} names, ${d.fldFixes.length} field sets, merged ${merged} duplicate${merged===1?"":"s"}. (one undo reverts all)`,"g");
         if (d.review.length) print(`${d.review.length} possible duplicate pair${d.review.length===1?"":"s"} still need review — run 'doctor'`,"a");
         return;
       }
@@ -2941,18 +2351,17 @@ async function exec(line){
     case "merge": {
       const parts=rest.split(/\s+/).filter(Boolean);
       if (parts.length!==2){ print("usage: merge <keep> <remove>  (names or C-IDs)","a"); return; }
-      const ra=await resolve(parts[0]), rb=await resolve(parts[1]);
+      const ra=resolve(parts[0]), rb=resolve(parts[1]);
       for (const [r,lbl] of [[ra,parts[0]],[rb,parts[1]]]){
         if (r.err){ print(r.err,"a"); return; }
         if (r.many){ print(`"${lbl}" is ambiguous — use a C-ID:`,"a"); printRows(r.many); return; }
       }
-      if (ra.c.cid===rb.c.cid){ print("that's the same component twice.","a"); return; }
+      if (ra.c===rb.c){ print("that's the same component twice.","a"); return; }
+      snapshotUndo(`merged ${rb.c.name} into ${ra.c.name}`);
       const dupName=rb.c.name;
-      try { await DB.merge(ra.c.cid, rb.c.cid); }
-      catch(e){ print("could not merge: "+e.message,"a"); return; }
-      const kept=await DB.item(ra.c.cid);
-      await refreshSummary(); deptCache=null; updateBadge(); graphSync();
-      print(`merged ${dupName} into ${kept.name} — now qty ${kept.qty} in BIN ${binStr(kept.bin)}. (undo reverts)`,"g");
+      mergeInto(ra.c, rb.c);
+      await save();
+      print(`merged ${dupName} into ${ra.c.name} — now qty ${ra.c.qty} in BIN ${ra.c.bin}. (undo reverts)`,"g");
       return;
     }
 
@@ -2963,17 +2372,14 @@ async function exec(line){
       const stamp=l=>{ const d=new Date(l.ts);
         return `${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
       if (rest.toLowerCase()==="export"){
-        const logRows=(await DB.log(1000)).rows.slice().reverse();
-        const csv=["time,action"].concat(logRows.map(l=>
+        const csv=["time,action"].concat(state.log.map(l=>
           `${new Date(l.ts).toISOString()},${'"'+l.text.replace(/"/g,'""')+'"'}`)).join("\n");
         print("ACTIVITY LOG CSV:","w");
         print("─".repeat(46),"d"); print(csv,"g"); print("─".repeat(46),"d");
         try{ await navigator.clipboard.writeText(csv); print("(copied to clipboard)","d"); }catch(e){}
         return;
       }
-      let L=[];
-      try { L=(await DB.log(200)).rows.slice().reverse(); }
-      catch(e){ print("could not read the activity log: "+e.message,"a"); return; }
+      let L=[...state.log];
       let label="";
       if (rest.toLowerCase()==="today"){
         const mid=new Date(); mid.setHours(0,0,0,0);
@@ -2991,27 +2397,20 @@ async function exec(line){
     }
 
     case "stats": {
-      await refreshSummary();
-      const total=summary.pieces;
+      const total=state.items.reduce((s,c)=>s+c.qty,0);
+      const bins=new Set(state.items.map(c=>c.bin)).size;
+      const lows=state.items.filter(c=>c.qty<=c.min).length;
       print("STATS","w");
-      print(`  unique components   ${summary.items}\n  total items         ${total}\n  bins used           ${summary.bins}\n  low stock           ${summary.low}`,"g");
+      print(`  unique components   ${state.items.length}\n  total items         ${total}\n  bins used           ${bins}\n  low stock           ${lows}`,"g");
       return;
     }
 
     case "export": {
-      const ea=rest.trim().toLowerCase();
-      if (ea==="xlsx"||ea==="excel"||ea==="xls"||ea.startsWith("xlsx ")||ea==="full"){
-        await exportXlsx(ea==="full"||ea.includes("full")); return;
-      }
-      if (ea==="report"||ea==="pdf"){ await exportReport(); return; }
-      if (ea==="photos"){ await exportPhotos(); return; }
-      if (!await loadAll("export")) return;
-      try { await DB.setMeta("last_export", String(Date.now())); }catch(e){}
+      state.lastExport=Date.now(); await save();
       const csv=toCSV();
       print("CSV EXPORT — copy everything between the lines:","w");
       print("─".repeat(46),"d"); print(csv,"g"); print("─".repeat(46),"d");
       try{ await navigator.clipboard.writeText(csv); print("(also copied to clipboard)","d"); }catch(e){}
-      print("also: export xlsx · export full (multi-sheet) · export report (pdf) · export photos · graph png","d");
       return;
     }
 
@@ -3051,7 +2450,7 @@ async function exec(line){
       return;
 
     default: {
-      const r=await search(t, {limit:200});
+      const r=search(t);
       if (r.length) printRows(r);
       else { print(`no matches for "${t}"`,"a"); print(`  add it:  add ${t} x1`,"d"); }
     }
@@ -3059,18 +2458,6 @@ async function exec(line){
 }
 
 /* ---------- brain graph: zero-dependency force-directed canvas ---------- */
-/* The graph gets its OWN bounded fetch. state.items is just the current screen, and
-   a force simulation over 100,000 nodes is neither drawable nor useful, so the
-   inventory view draws the first GRAPH_ITEM_CAP parts and the label says when it is
-   showing a sample. */
-const GRAPH_ITEM_CAP = 1500;
-let graphItems = [], graphItemsTotal = 0;
-async function refreshGraphItems(){
-  try {
-    const page = await DB.peek({limit:GRAPH_ITEM_CAP, sort:"bin"});
-    graphItems = page.rows; graphItemsTotal = page.total;
-  } catch(e){ graphItems = []; graphItemsTotal = 0; }
-}
 let graphMode="off", gNodes=[], gEdges=[], gAlpha=0, gRAF=null;
 let gView={kind:"inv"};
 let gWin=null, gPopCanvas=null, gPollTimer=null;      // second-monitor window
@@ -3093,12 +2480,6 @@ const SETTINGS = [
   {k:"glow",       label:"glow strength",  min:0,   max:2,   step:0.1,  def:1,    fmt:v=>Math.round(v*100)+"%"},
   {k:"dust",       label:"dust field",     min:0,   max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
   {k:"labelZoom",  label:"part-label zoom", min:0.8,max:2.5, step:0.1,  def:1.1,  fmt:v=>v.toFixed(1)+"x"},
-  // The galaxy view used to be a separate fork of the whole app. It is a setting now:
-  // off, projects/parts is the only project view and the galaxy is hidden everywhere.
-  {k:"galaxy",     label:"galaxy view",    min:0,   max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
-  // Orbit motion repaints every frame, so it is off by default and remembered per
-  // device — turning it on is a deliberate choice about spending the GPU.
-  {k:"orbit",      label:"orbit motion",   min:0,   max:1,   step:1,    def:0,    fmt:v=>v?"on":"off"},
 ];
 function cfg(k){ const m=SETTINGS.find(s=>s.k===k); return (state.cfg&&state.cfg[k]!==undefined)?state.cfg[k]:m.def; }
 function setCfg(k,v){ const m=SETTINGS.find(s=>s.k===k);
@@ -3112,7 +2493,7 @@ function updateHud(){
     : gView.kind==="galaxy"?"NODE GRAPH // GALAXY"
     : gView.kind==="projects"?"NODE GRAPH // PROJECTS" : "NODE GRAPH // PROJECT";
   if (stat){
-    const nodes=gNodes.length, depts=new Set(graphItems.map(c=>clsNum(c.bin))).size;
+    const nodes=gNodes.length, depts=new Set(state.items.map(c=>clsNum(c.bin))).size;
     stat.textContent = `${g3d?"3D":"2D"} · ${nodes} NODES · ${depts} DEPT`;
   }
 }
@@ -3144,11 +2525,11 @@ function buildGraphData(){
 
   if (gView.kind==="inv"){
     /* central "sun": every department orbits SECTIONS */
-    const sun=addN("SUN","sun","SECTIONS",{cmd:"home", count:graphItemsTotal});
+    const sun=addN("SUN","sun","SECTIONS",{cmd:"home", count:state.items.length});
     sun.x=0; sun.y=0; sun.z=0;                 // anchor at the origin
     /* EVERY part in the inventory, hanging off its section -> dept hubs -> sun */
     for (let d=0; d<10; d++){
-      const its=graphItems.filter(c=>clsNum(c.bin)===d);
+      const its=state.items.filter(c=>clsNum(c.bin)===d);
       if (!its.length) continue;
       addN("d"+d,"dept",clsLabel(d).split(" ")[0],{cmd:String(d),count:its.length});
       addE("d"+d,"SUN");
@@ -3174,7 +2555,7 @@ function buildGraphData(){
       addE("SUN","p"+p.pid);
       // this project's parts orbit its own core
       p.bom.forEach(l=>{
-        const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null; if(!c) return;
+        const c=state.items.find(i=>i.cid===l.cid); if(!c) return;
         const nidk="pc"+p.pid+"_"+c.cid;
         addN(nidk,"part",c.name,{cmd:"info "+cidStr(c), low:c.qty<=c.min});
         addE("p"+p.pid, nidk, 1);
@@ -3198,19 +2579,11 @@ function buildGraphData(){
         {cmd:"proj "+p.name, viewTo:{kind:"proj",pid:p.pid},
          active:p.pid===state.activePid, count:p.bom.length*6, core:true});  // core=cluster center
     });
-    // Each distinct part becomes one star, linked to every project that needs it.
-    // The part details come from the BOM lines themselves — they arrive from the API
-    // already joined with name, bin and live stock, and state.items is only ever the
-    // rows currently on screen.
+    // each distinct part becomes one star, linked to every project that needs it
     const partUse={};   // cid -> [pid,...]
-    const partInfo={};  // cid -> the joined line data
-    projs.forEach(p=>p.bom.forEach(l=>{
-      (partUse[l.cid] ||= []).push(p.pid);
-      partInfo[l.cid] = l;
-    }));
+    projs.forEach(p=>p.bom.forEach(l=>{ (partUse[l.cid] ||= []).push(p.pid); }));
     Object.entries(partUse).forEach(([cid,pids])=>{
-      const l=partInfo[cid]; if(!l) return;
-      const c={cid:+cid, name:l.name, qty:l.have, min:0, bin:l.bin};
+      const c=state.items.find(i=>i.cid===+cid); if(!c) return;
       const shared = pids.length>1;
       addN("c"+c.cid, shared?"shared":"part", c.name,
         {cmd:"info "+cidStr(c), low:c.qty<=c.min, shared});
@@ -3222,7 +2595,7 @@ function buildGraphData(){
     if (!p){ gView={kind:"projects"}; return buildGraphData(); }
     addN("p"+p.pid,"proj",p.name,{cmd:"proj "+p.name, active:true, count:p.bom.length*6});
     p.bom.forEach(l=>{
-      const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null; if(!c) return;
+      const c=state.items.find(i=>i.cid===l.cid); if(!c) return;
       addN("c"+c.cid,"part",`${l.need}x ${c.name}`,
         {cmd:"info "+cidStr(c), low:c.qty<l.need || c.qty<=c.min});
       addE("p"+p.pid,"c"+c.cid, l.need);
@@ -3250,88 +2623,8 @@ function nodeR(n){
   const base = n.type==="sun"?18 : n.type==="proj"?13 : n.type==="dept"?10 : n.type==="shared"?7 : n.type==="sec"?6.5 : 4.5;
   return base + Math.min(n.type==="sun"?8:4, (n.count||0)*0.05);
 }
-/* ── orbit mode ──────────────────────────────────────────────────────────────
-   A "show mode" for the galaxy and projects views. Once the force layout has
-   settled, every node stops being simulated and starts revolving: a project's parts
-   around that project's core, the projects around the central sun.
-
-   The orbits are CIRCLES on individually tilted 3D planes. Through the existing
-   perspective camera they read as ellipses, which gives the planetary feel without
-   the cost (or the tuning) of real Kepler ellipses.
-
-   It repaints every frame, so it defaults OFF. */
-let gOrbit = false, gOrbitInit = false;   // gOrbit mirrors cfg("orbit"); see the toggle
-
-/* orbitParentMap derives the hierarchy from the edges that are already there:
-   parts hang off their project, projects hang off the sun. Trail edges (w<0, the
-   faint project-to-project links) are skipped — they are not a parent relationship. */
-function orbitParentMap(){
-  const parent = {};
-  gEdges.forEach(e=>{
-    if (e.w < 0) return;
-    const at = e.a.type, bt = e.b.type;
-    if (bt==="sun" || bt==="dept") parent[e.a.id] = e.b.id;
-    else if (at==="sun" || at==="dept") parent[e.b.id] = e.a.id;
-    else if (at==="proj" && bt!=="proj") parent[e.b.id] = e.a.id;
-    else if (bt==="proj" && at!=="proj") parent[e.a.id] = e.b.id;
-  });
-  return parent;
-}
-
-/* initOrbits freezes the settled layout into orbital elements: each node keeps the
-   radius and angle it already had, so switching the mode on does not make anything
-   jump — it just starts moving from where it stopped. */
-function initOrbits(){
-  const parent = orbitParentMap(), byId = {};
-  gNodes.forEach(n=>byId[n.id]=n);
-  gNodes.forEach(n=>{
-    const par = byId[parent[n.id]];
-    if (!par || n.type==="sun"){ n.orb=null; return; }
-    const dx=n.x-par.x, dy=n.y-par.y, dz=(n.z||0)-(par.z||0);
-    const r = Math.max(12, Math.hypot(dx,dy,dz));
-    // a stable per-node seed, so a node keeps its tilt and direction across restarts
-    const seed = (n.cid || n.id.length*7) + r;
-    const incl = (Math.sin(seed)*0.5 + 0.5) * 1.1;     // orbital plane tilt
-    const speed = (0.15 + 0.5/Math.sqrt(r)) * (seed%2 ? 1 : -1) * 0.02;
-    n.orb = { parent:par.id, r, incl, ang:Math.atan2(dy,dx), speed,
-              cx:Math.cos(incl), sx:Math.sin(incl) };
-  });
-  gOrbitInit = true;
-}
-
-/* stepOrbits advances every orbit one frame. The sun stays pinned at the origin. */
-function stepOrbits(dt){
-  const byId = {};
-  gNodes.forEach(n=>byId[n.id]=n);
-  gNodes.forEach(n=>{
-    if (n.type==="sun"){ n.x=0; n.y=0; n.z=0; return; }
-    const o = n.orb; if (!o) return;
-    const par = byId[o.parent]; if (!par) return;
-    o.ang += o.speed*dt;
-    n.x = par.x + Math.cos(o.ang)*o.r;
-    n.y = par.y + Math.sin(o.ang)*o.r*o.cx;
-    n.z = (par.z||0) + Math.sin(o.ang)*o.r*o.sx;
-  });
-}
-
 function gTick(){
   const a=gAlpha;
-
-  // Orbit mode takes over the frame once the layout has settled. It pins gAlpha low
-  // so the force simulation below stays quiet, draws, reschedules, and returns —
-  // the physics and the orbits must never run in the same frame or they fight.
-  if (gOrbit && (gView.kind==="galaxy" || gView.kind==="projects")){
-    if (a<=0.05 && !gOrbitInit) initOrbits();
-    if (gOrbitInit){
-      stepOrbits(1);
-      gAlpha = 0.001;
-      if (g3d && gAutoRot) gYaw += cfg("driftSpeed");
-      gDraw();
-      if (graphMode==="off" && !gPopped()){ gRAF=null; return; }
-      gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
-      return;
-    }
-  }
   if (a>0.015){
     for (let i=0;i<gNodes.length;i++) for (let j=i+1;j<gNodes.length;j++){
       const p=gNodes[i], q=gNodes[j];
@@ -3533,7 +2826,7 @@ function gDraw3D(x, W, H, hoverSet){
       x.font=`${Math.max(8,11*p.scale)}px Consolas,monospace`;
       x.fillStyle = n.type==="proj"?C.white:n.low?C.amber:(holo?hexA(C.cyan,0.85):C.fg);
       x.textAlign="center";
-      x.fillText(String(n.label||"").slice(0,20), p.sx, p.sy-r-3);
+      x.fillText(n.label.slice(0,20), p.sx, p.sy-r-3);
     }
   });
   x.shadowBlur=0; x.globalAlpha=1;
@@ -3569,12 +2862,9 @@ function setGraph(m){
   if (!gRAF) gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
 }
 function setGraphView(v){
-  // every route into the galaxy funnels through here, so one guard covers the command,
-  // the view cycle, the HUD button and the demo
-  if (v && v.kind==="galaxy" && !galaxyOn()) v={kind:"projects"};
+  if (v && v.kind==="galaxy") v={kind:"projects"};   // no-galaxy fork: fall back to projects
   const changed = !gView || gView.kind!==v.kind || gView.pid!==v.pid;
   gView=v;
-  if (changed) gOrbitInit=false;   // radii are captured from the settled layout
   if (graphMode!=="off"){ buildGraphData(); updateGLabel();
     if (changed){ const nm = v.kind==="inv"?"INVENTORY":v.kind==="projects"?"PROJECTS":v.kind==="galaxy"?"GALAXY":
       (state.projects.find(x=>x.pid===v.pid)?.name||"PROJECT"); toast(nm); } }
@@ -3585,18 +2875,11 @@ function toast(msg){
   el.textContent=msg; el.classList.add("show");
   clearTimeout(_toastT); _toastT=setTimeout(()=>el.classList.remove("show"), 1100);
 }
-/* galaxyOn is the single question every galaxy entry point asks. Keeping it in one
-   place is what lets the "no galaxy" build be a setting instead of a forked copy of
-   the app that has to be re-derived after every change. */
-function galaxyOn(){ return !!cfg("galaxy"); }
-
 function cycleView(){
   if (graphMode==="off") setGraph("split");
   // if currently drilled into a single project, treat as "projects"
   const cur = gView.kind==="proj" ? "projects" : gView.kind;
-  const order = state.projects.length
-    ? (galaxyOn() ? ["inv","projects","galaxy"] : ["inv","projects"])
-    : ["inv"];
+  const order = state.projects.length ? ["inv","projects"] : ["inv"];
   const i = order.indexOf(cur);
   const next = order[(i+1)%order.length];
   if (next==="galaxy") g3d=true;
@@ -3622,11 +2905,7 @@ function graphHome(){          // recenter camera / view — the auto-home
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
   gAlpha=Math.max(gAlpha,0.6);
 }
-async function graphSync(){
-  if (graphMode==="off") return;
-  await Promise.all([refreshGraphItems(), gView.kind==="inv" ? null : loadProjects()]);
-  buildGraphData(); updateGLabel();
-}
+function graphSync(){ if (graphMode!=="off"){ buildGraphData(); updateGLabel(); } }
 /* graph input — bound to the inline pane and, when popped, the second window */
 function bindGraphPointer(cv, win){
   const xy=e=>{ const r=cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; };
@@ -3841,16 +3120,9 @@ function qrSVG(text){
 }
 
 /* ---------- printable bin labels ---------- */
-async function labelSheet(bins){
-  // Fetch every bin's contents first: the label rendering below is synchronous, and
-  // awaiting inside a .map() callback does not do what it looks like it does.
-  const contents = new Map();
-  await Promise.all(bins.map(async b => {
-    try { contents.set(b, (await DB.peek({bin:b, limit:200})).rows); }
-    catch(e){ contents.set(b, []); }
-  }));
+function labelSheet(bins){
   const lbls = bins.map(b=>{
-    const items = contents.get(b) || [];
+    const items=state.items.filter(c=>c.bin===b);
     const d=clsNum(b), t=secOf(b);
     const sec=secLabel(d,t);
     return `<div class="lbl">${qrSVG("INV:"+binStr(b))}<div>
@@ -4204,15 +3476,8 @@ cmd.addEventListener("keydown", async e=>{
   if (e.key==="F2" && mode.type==="normal"){ e.preventDefault(); await run("doctor"); return; }
   if (e.key==="F3" && mode.type==="normal"){ e.preventDefault(); await run("graph 3d"); return; }
   if (e.key==="F4" && mode.type==="normal"){ e.preventDefault(); await run("bar"); return; }
-  {
-    const graphKey = (k) => (e.key===k || e.key===k.toUpperCase())
-      && mode.type==="normal" && graphMode!=="off" && navSel()<0
-      // alt from the prompt, or bare when the graph pane itself has focus. Without
-      // this the letter never reaches the input and "graph"/"help" cannot be typed.
-      && (e.altKey || document.activeElement !== cmd);
-    if (graphKey("h")){ e.preventDefault(); graphHome(); return; }
-    if (graphKey("g")){ e.preventDefault(); cycleView(); return; }
-  }
+  if (e.key==="h" && mode.type==="normal" && !cmd.value && graphMode!=="off" && navSel()<0){ e.preventDefault(); graphHome(); return; }
+  if (e.key==="g" && mode.type==="normal" && !cmd.value && graphMode!=="off" && navSel()<0){ e.preventDefault(); cycleView(); return; }
   if ((e.key==="ArrowLeft"||e.key==="ArrowRight") && mode.type==="normal" && !cmd.value){
     const rows=navRows(), i=navSel();
     if (i>=0 && rows[i] && rows[i].dataset.cfg){
@@ -4263,15 +3528,13 @@ cmd.addEventListener("keydown", async e=>{
     const cid = el.dataset.cid ? +el.dataset.cid : (liveItems[navSel()]?.cid);
     const it = cid!=null ? state.items.find(c=>c.cid===cid) : null;
     if (!it) return;
-    await loadProjects();
     const ap=state.projects.find(x=>x.pid===state.activePid);
     if (!ap){ print("no active project — proj new <name>, or proj use <name>","a"); return; }
     const line=ap.bom.find(l=>l.cid===it.cid);
-    const want=(line?line.need:0)+1;
-    try { await DB.setBom(ap.pid, it.cid, want); }
-    catch(e){ print("could not add it to the build: "+e.message,"a"); return; }
-    await loadProjects(); graphSync();
-    print(`+1x ${it.name} -> ${ap.name} (need ${want})`,"g");
+    logAct(`bom: +1x ${it.name} -> ${ap.name}`, {type:"bomline", pid:ap.pid, cid:it.cid, prev: line?line.need:null});
+    if (line) line.need++; else ap.bom.push({cid:it.cid, need:1});
+    await save();
+    print(`+1x ${it.name} -> ${ap.name} (need ${line?line.need:1})`,"g");
     return;
   }
 
@@ -4305,7 +3568,7 @@ cmd.addEventListener("keydown", async e=>{
       const t=line.trim();
       if (t.toLowerCase()==="cancel"){ endMode("cancelled.","a"); return; }
       if (!/^\d$/.test(t)){ print("  enter a digit 0-9 (or 'cancel')","a"); return; }
-      mode.draft.bin=await nextFreeBin(+t);
+      mode.draft.bin=nextFreeBin(+t);
       const d=mode.draft; endMode();
       await commitAdd(d); return;
     }
@@ -4322,7 +3585,7 @@ cmd.addEventListener("keydown", async e=>{
       if (mode.demoLoad){
         endMode();
         if (line.trim().toLowerCase().startsWith("y")){
-          await loadDemoData(); await save(); home();
+          loadDemoData(); await save(); home();
           if (graphMode==="off") setGraph("split");
           g3d=true; setGraphView({kind:"galaxy"});
           print("demo loaded — galaxy open. 'demo clear' to wipe.","g");
@@ -4330,11 +3593,10 @@ cmd.addEventListener("keydown", async e=>{
         drawMirror(); return;
       }
       if (line.trim().toLowerCase().startsWith("y")){
-        await DB.remove(mode.c.cid);
-        setView(state.items.filter(x=>x!==mode.c));
-        await refreshSummary(); deptCache=null;
-        if (hasPhoto(mode.c.cid)) delPhoto(mode.c.cid);
-        print(`deleted ${mode.c.name}.`,"a");
+        state.items=state.items.filter(x=>x!==mode.c);
+        if (mode.c.photo) delPhoto(mode.c.cid);
+        logAct(`deleted ${mode.c.name} (was BIN ${mode.c.bin}, qty ${mode.c.qty})`, {type:"del", item:{...mode.c}});
+        await save(); print(`deleted ${mode.c.name}.`,"a");
       } else print("kept it.","g");
       endMode(); drawMirror(); return;
     }
@@ -4344,7 +3606,7 @@ cmd.addEventListener("keydown", async e=>{
       if (line.trim().toLowerCase().startsWith("y")){
         snapshotUndo(`emptied BIN ${binStr(mode.bin)} (${mode.items.length} entries)`);
         const gone=mode.items;
-        gone.forEach(g=>{ if(hasPhoto(g.cid)) delPhoto(g.cid); });
+        gone.forEach(g=>{ if(g.photo) delPhoto(g.cid); });
         state.items=state.items.filter(c=>!gone.includes(c));
         await save();
         print(`BIN ${binStr(mode.bin)} emptied — ${gone.length} entries removed. (undo restores)`,"a");
@@ -4463,7 +3725,7 @@ async function attachPhoto(cid, fileOrBlob){
   try{
     const url=await downscaleImage(fileOrBlob);
     await setPhoto(cid, url);
-    const it=state.items.find(x=>x.cid===cid); if(it){ photoIds.add(cid); await save(); }
+    const it=state.items.find(x=>x.cid===cid); if(it){ it.photo=true; await save(); }
     print(`photo attached to C-${String(cid).padStart(3,"0")}. (info to view)`,"g");
     if (graphMode!=="off"){ gAlpha=Math.max(gAlpha,0.05); }
   }catch(e){ print("couldn't read that image.","a"); }
@@ -4512,7 +3774,7 @@ function updateBadge(){
     d.review.forEach(pr=>{ g++; pr.forEach(c=>issueMarks.set(c.cid,"~"+g)); });
     const safe = d.nameFixes.length + d.fldFixes.length + d.exact.reduce((s,x)=>s+x.length-1,0);
     const n = safe + d.review.length;
-    const pcs = summary.pieces;
+    const pcs = state.items.reduce((s,c)=>s+c.qty,0);
     const ap=state.projects?.find(x=>x.pid===state.activePid);
     barl.innerHTML = state.shopName ? `<b>${esc(state.shopName)}</b>` : `<b>INVENTORY</b>`;
     const stale = state.lastBackup && (Date.now()-state.lastBackup > 6048e5);
@@ -4543,11 +3805,8 @@ barr.addEventListener("click", async e=>{
 
 load().then(async ()=>{
   applyTheme(state.theme||"campbell"); hudOn=state.hud!==false; gCores=state.cores!==false;
-  gOrbit = !!cfg("orbit"); gOrbitInit = false;   // remembered from the settings screen
   document.body.classList.toggle("bar-off", !!state.barOff);
-  await loadProjects();
-  await refreshPhotoIds();
-  if (state.firstRun && !state.shopName){
+  if (state.firstRun && !state.shopName && (state.seededDemo || (state.seeded && state.items.length))){
     updateBadge(); firstRun(); cmd.focus();
   } else { updateBadge(); home(); cmd.focus(); }
   await restoreBackupHandle();
