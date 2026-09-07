@@ -70,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/meta/{key}", s.getMeta)
 	mux.HandleFunc("PUT /api/meta/{key}", s.putMeta)
 
+	s.routeMaintenance(mux)
+
 	mux.Handle("/", s.ui)
 
 	return s.logging(s.auth(mux))
@@ -111,6 +113,9 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		}
 	})
 }
+
+// nowMilli is the timestamp format the whole app uses (JS Date.now()).
+func nowMilli() int64 { return time.Now().UnixMilli() }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

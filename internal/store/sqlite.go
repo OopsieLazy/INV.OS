@@ -1152,6 +1152,11 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 			From   int64 `json:"from"`
 			To     int64 `json:"to"`
 
+			CountBefore     int              `json:"countBefore"`
+			BulkBefore      []Item           `json:"bulkBefore"`
+			MergeKeepBefore *Item            `json:"mergeKeepBefore"`
+			MergeBom        []map[string]any `json:"mergeBom"`
+
 			PID        int64         `json:"pid"`
 			ProjBefore *Project      `json:"projBefore"`
 			ProjGone   *Project      `json:"projGone"`
@@ -1182,6 +1187,70 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 				var hay string
 				if hay, err = s.haystack(ctx, tx, it); err == nil {
 					_, err = tx.ExecContext(ctx, `UPDATE items SET norm=? WHERE cid=?`, hay, it.CID)
+				}
+			}
+		case "count":
+			// put the quantity back to what the system believed before the count
+			_, err = tx.ExecContext(ctx,
+				`UPDATE items SET qty=?, updated_at=? WHERE cid=?`,
+				p.CountBefore, time.Now().UnixMilli(), p.CID)
+		case "bulk":
+			// every row the batch touched goes back to its own before-state
+			for _, b := range p.BulkBefore {
+				if err != nil {
+					break
+				}
+				_, err = tx.ExecContext(ctx,
+					`UPDATE items SET name=?,bin=?,qty=?,min=?,value=?,pkg=?,part=?,
+					        supplier=?,source=?,link=?,notes=?,updated_at=? WHERE cid=?`,
+					b.Name, b.Bin, b.Qty, b.Min, b.Value, b.Pkg, b.Part,
+					b.Supplier, b.Source, b.Link, b.Notes, time.Now().UnixMilli(), b.CID)
+				if err == nil {
+					var hay string
+					if hay, err = s.haystack(ctx, tx, b); err == nil {
+						_, err = tx.ExecContext(ctx, `UPDATE items SET norm=? WHERE cid=?`, hay, b.CID)
+					}
+				}
+			}
+		case "merge":
+			// restore the survivor's own fields, bring the duplicate back with its
+			// original cid, and hand its BOM lines back
+			if p.MergeKeepBefore == nil || p.Item == nil {
+				return fmt.Errorf("undo payload for log %d is incomplete", e.ID)
+			}
+			k := *p.MergeKeepBefore
+			d := *p.Item
+			_, err = tx.ExecContext(ctx,
+				`UPDATE items SET qty=?,min=?,value=?,pkg=?,part=?,supplier=?,source=?,link=?,notes=?,updated_at=?
+				 WHERE cid=?`,
+				k.Qty, k.Min, k.Value, k.Pkg, k.Part, k.Supplier, k.Source, k.Link, k.Notes,
+				time.Now().UnixMilli(), k.CID)
+			if err == nil {
+				_, err = tx.ExecContext(ctx,
+					`INSERT INTO items(cid,name,norm,bin,qty,min,value,pkg,part,supplier,source,link,notes,created_at,updated_at)
+					 VALUES(?,?,'',?,?,?,?,?,?,?,?,?,?,?,?)`,
+					d.CID, d.Name, d.Bin, d.Qty, d.Min, d.Value, d.Pkg, d.Part,
+					d.Supplier, d.Source, d.Link, d.Notes, d.CreatedAt, time.Now().UnixMilli())
+			}
+			if err == nil {
+				var hay string
+				if hay, err = s.haystack(ctx, tx, d); err == nil {
+					_, err = tx.ExecContext(ctx, `UPDATE items SET norm=? WHERE cid=?`, hay, d.CID)
+				}
+			}
+			for _, bl := range p.MergeBom {
+				if err != nil {
+					break
+				}
+				pid, okp := toInt64(bl["pid"])
+				qty, okq := toInt64(bl["qty"])
+				if !okp || !okq {
+					continue
+				}
+				if _, err = tx.ExecContext(ctx,
+					`INSERT INTO bom(pid,cid,qty) VALUES(?,?,?)
+					 ON CONFLICT(pid,cid) DO UPDATE SET qty=excluded.qty`, pid, d.CID, qty); err == nil {
+					_, err = tx.ExecContext(ctx, `DELETE FROM bom WHERE pid=? AND cid=?`, pid, k.CID)
 				}
 			}
 		case "proj.add":
@@ -1254,6 +1323,18 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 		return err
 	})
 	return e, err
+}
+
+// toInt64 reads a number back out of a decoded JSON payload, where every number
+// arrives as a float64.
+func toInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	}
+	return 0, false
 }
 
 // ── misc ────────────────────────────────────────────────────────────────────

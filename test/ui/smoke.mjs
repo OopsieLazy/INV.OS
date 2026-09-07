@@ -342,6 +342,111 @@ async function runChecks(page, t, consoleErrors) {
     await page.evaluate(() => gNodes.every(n => n.type !== 'proj')));
   await t.key('Escape');
 
+  // ── every previously-gated feature now writes to the database ─────────────
+  console.log(String.fromCharCode(10) + 'ported features');
+
+  // cycle count: walk one item, correct it, check the correction and the history
+  const target = (await api.get('/api/items?q=breadboard')).rows[0];
+  await t.run(`count 9`);
+  const counting = await t.screen();
+  check('count walks a scope', /CYCLE COUNT/i.test(counting), counting.slice(-200));
+  await t.run('99');                                   // correct the first item to 99
+  await t.run('stop');
+  const counted = (await api.get('/api/items?q=breadboard')).rows[0];
+  check('a count writes the corrected quantity to the database',
+    counted.qty === 99 || counted.counted, `qty ${counted.qty}, counted ${counted.counted}`);
+  const clog = await api.get('/api/countlog');
+  check('the count is recorded in the count history', clog.length >= 1,
+    `${clog.length} entries`);
+  await t.run('count report');
+  check('count report renders the history', /COUNT HISTORY/i.test(await t.screen()));
+
+  // doctor + tidy read the whole inventory
+  await t.run('doctor');
+  const doc = await t.screen();
+  check('doctor runs over the whole inventory',
+    /DOCTOR REPORT|database clean/i.test(doc), doc.slice(-200));
+  await t.run('tidy');
+  check('tidy runs', /tidy|consistent/i.test(await t.screen()));
+
+  // merge folds one item into another, in the database
+  await fetch(`${BASE}/api/items`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Merge Alpha', bin: 3110, qty: 5 }) });
+  await fetch(`${BASE}/api/items`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Merge Beta', bin: 3111, qty: 7 }) });
+  const ma = (await api.get('/api/items?q=Merge Alpha')).rows[0];
+  const mb = (await api.get('/api/items?q=Merge Beta')).rows[0];
+  await t.run(`merge ${cid(ma)} ${cid(mb)}`);
+  const kept = await api.get(`/api/items/${ma.cid}`);
+  const goneRes2 = await fetch(`${BASE}/api/items/${mb.cid}`);
+  check('merge adds the quantities together', kept.qty === 12, `qty ${kept.qty}`);
+  check('merge removes the duplicate', goneRes2.status === 404, `status ${goneRes2.status}`);
+  await t.run('undo');
+  check('undo restores the merged-away item',
+    (await fetch(`${BASE}/api/items/${mb.cid}`)).status === 200);
+
+  // remap moves a whole range of bins in one bulk write
+  await t.run('remap 311 411');
+  const remapped = await api.get(`/api/items/${ma.cid}`);
+  check('remap rewrote the bin server-side', String(remapped.bin).startsWith('411'),
+    `bin ${remapped.bin}`);
+  await t.run('undo');
+  check('undo reverses the whole remap in one step',
+    (await api.get(`/api/items/${ma.cid}`)).bin === 3110);
+
+  // photos live in the database, so any device sees them
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  await page.evaluate(async ([c, d]) => { await DB.putPhoto(c, d); },
+    [ma.cid, png]);
+  const ids = await api.get('/api/photos');
+  check('a photo is stored in the database', ids.includes(ma.cid), JSON.stringify(ids));
+  const shot = await fetch(`${BASE}/api/items/${ma.cid}/photo`);
+  check('the photo is served back', shot.ok && shot.headers.get('content-type') === 'image/png',
+    `status ${shot.status}`);
+
+  // backup + the real database file
+  const dump = await api.get('/api/export');
+  check('backup exports the whole shop', Array.isArray(dump.items) && dump.items.length > 0
+    && Array.isArray(dump.projects), `items ${dump.items && dump.items.length}`);
+  const dbFile = await fetch(`${BASE}/api/db`);
+  const dbBuf = await dbFile.arrayBuffer();
+  const magic = new TextDecoder().decode(new Uint8Array(dbBuf).slice(0, 15));
+  check('db export returns a real SQLite file', magic === 'SQLite format 3',
+    `header was ${JSON.stringify(magic)}`);
+
+  await t.run('server');
+  check('server screen reports this station', /SERVER/i.test(await t.screen()));
+  await t.run('db');
+  check('db screen shows the live file', /DATABASE/i.test(await t.screen()));
+  await t.run('rollback');
+  check('rollback lists reversible steps', /ROLLBACK/i.test(await t.screen()));
+  await t.key('Escape');
+
+  // ── every command runs without throwing ───────────────────────────────────
+  // Parity sweep: the exe must not have a command that blows up where the HTML build
+  // worked. This does not check what each one DOES — the checks above do that — it
+  // catches the class of breakage a port introduces: a function that now needs an
+  // await, or reads a field the server names differently.
+  console.log(String.fromCharCode(10) + 'command sweep');
+  const errorsBefore = consoleErrors.length;
+  const sweep = [
+    'help', 'keys', 'menu', 'stats', 'health', 'low', 'list', 'bins', 'map', 'classes',
+    'sections', 'recent', 'log', 'demo', 'settings', 'theme', 'server', 'db', 'rollback',
+    'count report', 'doctor', 'tidy', 'proj', 'template', 'setup', 'welcome',
+    'graph', 'graph inv', 'graph projects', 'graph galaxy', 'graph 2d', 'graph 3d',
+    'graph home', 'graph png', 'labels 1', 'info breadboard', 'find resistor', '1', '11',
+  ];
+  for (const cmdText of sweep) {
+    await t.run(cmdText);
+    if (cmdText === 'setup' || cmdText === 'welcome') await t.key('Escape');
+  }
+  await t.key('Escape');
+  const newErrors = consoleErrors.slice(errorsBefore);
+  check('every command runs without a page error', newErrors.length === 0,
+    newErrors.slice(0, 3).join(' | '));
+
   // ── stale-data guard ──────────────────────────────────────────────────────
   // The service worker caches the app shell. It must NOT cache /api/, or the same
   // GET returns yesterday's inventory forever — a bin that reads 40 when the drawer

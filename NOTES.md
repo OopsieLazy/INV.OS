@@ -1458,3 +1458,64 @@ the layout settles, nodes measurably move, every orbiting node holds its radius 
 its parent (which is what makes it an orbit and not drift), it toggles off again, and
 the inventory view is left alone. The settle wait is a condition, not a sleep, so it
 does not flake on a slower machine. Three consecutive clean runs.
+
+---
+
+# v22.0 — FULL PORT: every HTML feature now runs against the database
+
+The exe had a working core but a set of features switched off with an explanation.
+They are all on now, and all of them write to SQLite. Nothing is gated.
+
+## Parity, checked rather than claimed
+- command set: identical to the HTML build (diff of every `case "x"` — empty both ways)
+- functions: identical (no function in the HTML that is missing here)
+- menu entries: identical
+- head/CSS/body markup: byte-identical
+The one deliberate difference is the g/h hotkeys (see v21.3 — they made "graph" and
+"help" untypeable), now alt+g / alt+h.
+
+## Also picked up the newer HTML build the user re-added
+It was ahead of the fork point: `export xlsx` / `export full` (multi-sheet workbook),
+`export report` (printable/PDF summary), `export photos`, and `graph png`. All ported,
+reading from the database rather than an in-memory array.
+
+## What each gated feature became
+- **cycle count** — `RecordCount` books the corrected quantity, the counted-at stamp and
+  the discrepancy row in ONE transaction, undoable. Scope is a query, so counting a
+  shelf walks that shelf whatever its size. `count report` reads the server's history.
+  A count that MATCHES is still recorded: "we checked and it was right" is the evidence
+  an audit trail exists to provide.
+- **doctor / tidy / remap / export** — these are meaningless on a page of results, so
+  they explicitly pull the whole inventory (`loadAll`, which pages through and says so
+  for big shops). Their WRITES go through `BulkUpdate`: one transaction, one log entry,
+  so renaming 400 items is ONE undo, not 400.
+- **merge** — server-side: quantities add, blank fields fill from the duplicate, BOM
+  lines repoint (a project referencing both keeps the larger need), duplicate removed.
+  Undo restores the survivor's fields AND the duplicate with its original CID.
+- **import** — the wizard is unchanged; the commit is one bulk insert, so a 5,000-row
+  spreadsheet is one transaction and one undo step. Bins are handed out per department
+  as the batch is built, so a run of similar parts does not all land in one bin.
+- **photos** — moved from per-browser IndexedDB into the database. A photo taken on the
+  phone at the bench is now there on the office PC. Blobs live in their own table, so
+  listing items never drags image bytes through memory; `/api/photos` returns just the
+  id list for row flags, and `<img>` points straight at the photo endpoint.
+- **backup** — downloads the whole shop as one JSON document from the server.
+- **db** — stopped being a "mirror" setting. The exe's SQLite file IS the live database;
+  the screen shows where it is, and `db export` downloads a consistent copy taken with
+  SQLite's own VACUUM INTO (safe while the shop is working, opens in any SQLite tool).
+- **server** — this build IS the server. The screen reports the version, the URLs other
+  devices can open, whether a token is required, and how to restart with `-lan`.
+- **rollback** — the old build swapped in a checksummed JSON snapshot. The database has
+  a transactional log instead, so `rollback N` walks back N reversible steps. Same
+  capability, except every step is a real transaction rather than a whole-state swap.
+
+## Verified
+58 UI end-to-end checks. New ones cover: a count reaching the database and the history,
+doctor/tidy over the whole inventory, merge adding quantities + removing the duplicate +
+undo restoring it, remap rewriting bins and undoing in one step, a photo stored and
+served back, the JSON backup, `/api/db` returning bytes that start with the real
+"SQLite format 3" header, and the server/db/rollback screens.
+
+Plus a COMMAND SWEEP: every command in the app is run and the page must raise no
+error. It does not check what each one does — the checks above do that — it catches the
+class of breakage a port introduces, like a function that now needs an await.

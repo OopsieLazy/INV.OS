@@ -114,6 +114,25 @@ type BomLine struct {
 	Have int    `json:"have"` // joined current stock
 }
 
+// CountEntry is one line of the cycle-count history: what the shelf was expected to
+// hold and what was actually on it. The discrepancy is the point of the exercise, so
+// entries are kept even when they match.
+type CountEntry struct {
+	ID       int64  `json:"id"`
+	TS       int64  `json:"ts"`
+	CID      int64  `json:"cid"`
+	Name     string `json:"name"` // joined for display
+	Expected int    `json:"expected"`
+	Actual   int    `json:"actual"`
+	Scope    string `json:"scope"`
+}
+
+// ItemPatch is one entry in a bulk edit: which item, and which fields to change.
+type ItemPatch struct {
+	CID   int64          `json:"cid"`
+	Patch map[string]any `json:"patch"`
+}
+
 // SharedPart is one item that appears in several projects.
 type SharedPart struct {
 	CID      int64   `json:"cid"`
@@ -188,6 +207,26 @@ type Store interface {
 	// history
 	Log(ctx context.Context, limit, offset int) (Page[LogEntry], error)
 	Undo(ctx context.Context) (LogEntry, error)
+
+	// cycle count
+	RecordCount(ctx context.Context, cid int64, actual int, scope string) (Item, error)
+	CountLog(ctx context.Context, limit int) ([]CountEntry, error)
+
+	// photos
+	SetPhoto(ctx context.Context, cid int64, mime string, data []byte) error
+	Photo(ctx context.Context, cid int64) (string, []byte, error)
+	DeletePhoto(ctx context.Context, cid int64) error
+	PhotoIDs(ctx context.Context) ([]int64, error)
+
+	// bulk maintenance — tidy/doctor apply many edits that must undo as ONE step
+	BulkUpdate(ctx context.Context, patches []ItemPatch, what string) (int, error)
+	MergeItems(ctx context.Context, keep, drop int64) error
+
+	// Backup writes a consistent copy of the whole database to destPath, safe to take
+	// while the shop is using it.
+	Backup(ctx context.Context, destPath string) error
+	// Path reports where the live database file is, so the app can tell the user.
+	Path() string
 
 	// misc
 	Stats(ctx context.Context) (Stats, error)

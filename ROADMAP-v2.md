@@ -159,9 +159,9 @@ LAN so shop tablets/phones hit the same inventory. Same codebase becomes the Saa
 - [ ] P5 LAN mode: bind 0.0.0.0, device discovery, concurrent-edit behavior
 - [ ] P6 packaging: signed .exe, Linux + Pi builds, one-command install
 - [x] P5 projects / BOM: store+API writes, un-gated project/build/pick  DONE v21.2
-- [ ] P6 cycle count: move counted/countlog into the database, un-gate `count`
-- [ ] P7 spreadsheet import: wire the wizard to POST /api/items/bulk (endpoint exists)
-- [ ] P8 photos: move from per-browser IndexedDB into the database
+- [x] P6 cycle count  DONE v22.0
+- [x] P7 spreadsheet import  DONE v22.0
+- [x] P8 photos in the database  DONE v22.0
 - [ ] P9 SaaS: multi-tenant behind the same Store interface (Postgres driver swap)
 
 Postgres is NOT planned for the shop product — SQLite handles the volume a shop will

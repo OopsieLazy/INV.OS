@@ -72,6 +72,13 @@ func run() error {
 	srv := api.New(st, web.Handler())
 	srv.Token = *token
 
+	// The app's `server` screen shows where this station is reachable, so the info
+	// the flags decided is handed to the API layer rather than guessed at there.
+	api.Info = api.ServerInfo{
+		Version: version, Port: *port, LAN: *lan, StartedAt: time.Now().UnixMilli(),
+		URLs: append([]string{fmt.Sprintf("http://localhost:%d", *port)}, lanURLs(*lan, *port)...),
+	}
+
 	host := "127.0.0.1"
 	if *lan {
 		host = "0.0.0.0"
@@ -136,6 +143,19 @@ func banner(db, local string, lan bool, port int, tokened bool) {
 		}
 	}
 	fmt.Println("  ctrl+c to stop")
+}
+
+// lanURLs renders the addresses a phone on the same network can open, or nothing when
+// the station is bound to localhost only.
+func lanURLs(lan bool, port int) []string {
+	if !lan {
+		return nil
+	}
+	var out []string
+	for _, ip := range lanIPs() {
+		out = append(out, fmt.Sprintf("http://%s:%d", ip, port))
+	}
+	return out
 }
 
 // lanIPs lists this machine's addresses on the local network, so the banner can print
