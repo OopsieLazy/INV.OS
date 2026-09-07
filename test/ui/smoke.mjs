@@ -312,6 +312,30 @@ async function runChecks(page, t, consoleErrors) {
 
   const orbitOn = await page.evaluate(() => gOrbit);
   check('graph orbit turns the mode on', orbitOn === true);
+
+  // Switching orbit on must not TELEPORT anything. The orbit used to be stored as a
+  // 3D radius with a 2D angle and a seeded tilt, which cannot reproduce the node's own
+  // position — so the first orbit frame moved every node hundreds of units. That is the
+  // visible "reset" a second after entering the view, and it looks like a layout bug
+  // rather than a maths one, which is why it survived so long.
+  const jumpAtStart = await page.evaluate(async () => {
+    const snap = () => gNodes.filter(n => n.orb).map(n => [n.x, n.y, n.z || 0]);
+    let before = snap(), worst = 0;
+    for (let f = 0; f < 90; f++) {
+      await new Promise(r => requestAnimationFrame(r));
+      const now = snap();
+      if (now.length === before.length) {
+        for (let i = 0; i < now.length; i++) {
+          const d = Math.hypot(now[i][0] - before[i][0], now[i][1] - before[i][1], now[i][2] - before[i][2]);
+          if (d > worst) worst = d;
+        }
+      }
+      before = now;
+    }
+    return worst;
+  });
+  check('no node teleports when orbit mode engages', jumpAtStart < 40,
+    `worst single-frame jump was ${jumpAtStart.toFixed(1)} units`);
   check('orbits were captured once the layout settled', settled,
     'gOrbitInit never became true within 8s');
 

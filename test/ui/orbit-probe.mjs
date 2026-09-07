@@ -56,6 +56,16 @@ await run('graph orbit');
 await page.waitForFunction(() => typeof gOrbitInit !== 'undefined' && gOrbitInit,
   null, { timeout: 10000 }).catch(() => console.log('  (orbits never initialised)'));
 
+console.log('state:', await page.evaluate(() => ({
+  graphMode, view: gView.kind, gOrbit, gOrbitInit,
+  nodes: gNodes.length,
+  withOrb: gNodes.filter(n => n.orb).length,
+  sample: gNodes.filter(n => n.orb).slice(0, 2).map(n => ({
+    id: n.id, r: +n.orb.r.toFixed(1), ang: +n.orb.ang.toFixed(3), speed: n.orb.speed,
+    ux: n.orb.ux, vx: n.orb.vx,
+  })),
+})));
+
 // Sample across a full camera rotation, because whether a node is behind the camera
 // depends on the yaw — the flip appears as the view turns.
 const worst = await page.evaluate(async () => {

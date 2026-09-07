@@ -1977,3 +1977,56 @@ should) and then asks what is under the cursor, trying a few points if the first
 
 91 UI checks. Orbit smoothness after all of this: p95 1.1px of screen movement a frame,
 worst 1.7px, zero nodes drawn behind the camera.
+
+---
+
+# v23.3 — the "reset" was every node teleporting on the first orbit frame
+
+You described it as: runs a bit, resets back to where it was a moment ago, then carries
+on — and said the older build did it too. It did. This was in the orbit maths from the
+original spec, not in anything recent.
+
+## Measured
+`test/ui/rewind-probe.mjs` records every node position every frame after a view switch
+and looks for discontinuities. One spike, and it lands exactly on `initOrbits`:
+
+    per-frame movement: median 0.59
+    spikes: f164 = 212.1        <- initOrbits ran on this frame
+
+A 360x jump against the median. Every node moves at once, so it reads as the whole
+layout snapping.
+
+## Why
+`initOrbits` stored `r` = the 3D distance, `ang` = `atan2(dy,dx)` (a 2D angle), and
+`incl` = a tilt picked from a seed. `stepOrbits` then rebuilt the position as
+`(r·cos(ang), r·sin(ang)·cos(incl), r·sin(ang)·sin(incl))`.
+
+Those cannot agree. The reconstruction only returns the node to where it was if `dz` is
+zero and the seeded tilt happens to match the node's actual position — which it never
+does. So the instant orbit mode engaged, every node jumped to a different point on its
+sphere.
+
+## Fix
+The orbit is stored as a BASIS instead of angles: `u` is the unit vector to where the
+node already is, `v` is perpendicular to it in the orbital plane, and the position is
+`par + r·(u·cos θ + v·sin θ)`. At θ=0 that is exactly the current position, so engaging
+orbit mode moves nothing. `v` comes from a per-node axis, so each orbit still gets its
+own tilt; in 2D the axis is fixed to the screen normal or the circle would collapse to a
+line. `recaptureOrbit` (used after a drag) rebuilds the same basis — its cross product
+was also wrong, producing a `v` that was not perpendicular to `u`, so a dragged node's
+radius drifted.
+
+After: no spikes, no rewinds, median frame movement 0.52, per-frame screen movement
+p95 1.1px.
+
+## A process note worth keeping
+The first attempt at this patch aborted midway — its second assertion failed, so the
+script exited WITHOUT writing, and only the half that had already been applied
+separately took effect. That left `stepOrbits` reading a basis that `initOrbits` never
+wrote (`ux: undefined`), and the orbit silently stopped moving. The tests caught it
+immediately; the state dump showed `ux: undefined` in one line. Patch scripts that
+assert before writing are the right shape — but "it printed an error" has to be read as
+"nothing was written", not "most of it worked".
+
+92 UI checks, including a new one that fails if any node moves more than 40 units in a
+single frame when orbit mode engages.

@@ -3473,12 +3473,32 @@ function initOrbits(){
     if (!par || n.type==="sun"){ n.orb=null; return; }
     const dx=n.x-par.x, dy=n.y-par.y, dz=(n.z||0)-(par.z||0);
     const r = Math.max(12, Math.hypot(dx,dy,dz));
-    // a stable per-node seed, so a node keeps its tilt and direction across restarts
+
+    /* The orbit is stored as a BASIS, not as angles. u points at where the node already
+       is; v is perpendicular to it in the orbital plane; the position is
+       par + r*(u*cos + v*sin), so angle 0 IS the node's current position.
+
+       The previous version stored a 3D radius alongside a 2D angle and a tilt chosen
+       from a seed, which cannot reproduce the node's own position. Measured: every node
+       jumped an average of 212 units on the first orbit frame, against a median frame
+       movement of 0.6 — the "reset" a second after switching in. */
+    const ux=dx/r, uy=dy/r, uz=dz/r;
+
+    // A per-node axis gives each orbit its own plane. In 2D it must be the screen plane
+    // or the circle collapses to a line.
     const seed = (n.cid || n.id.length*7) + r;
-    const incl = (Math.sin(seed)*0.5 + 0.5) * 1.1;     // orbital plane tilt
+    let ax, ay, az;
+    if (g3d){ ax=Math.sin(seed*1.7); ay=Math.cos(seed*2.3); az=Math.sin(seed*3.1+1); }
+    else { ax=0; ay=0; az=1; }
+
+    // v = normalise(axis x u) — perpendicular to the radius, inside the orbital plane
+    let vx=ay*uz-az*uy, vy=az*ux-ax*uz, vz=ax*uy-ay*ux;
+    let vl=Math.hypot(vx,vy,vz);
+    if (vl<1e-6){ vx=uy; vy=-ux; vz=0; vl=Math.hypot(vx,vy,vz)||1; }  // axis parallel to u
+    vx/=vl; vy/=vl; vz/=vl;
+
     const speed = (0.15 + 0.5/Math.sqrt(r)) * (seed%2 ? 1 : -1) * 0.02;
-    n.orb = { parent:par.id, r, incl, ang:Math.atan2(dy,dx), speed,
-              cx:Math.cos(incl), sx:Math.sin(incl) };
+    n.orb = { parent:par.id, r, ang:0, speed, ux, uy, uz, vx, vy, vz };
   });
   gOrbitInit = true;
 }
@@ -3491,8 +3511,16 @@ function recaptureOrbit(n){
   const byId={}; gNodes.forEach(x=>byId[x.id]=x);
   const par=byId[n.orb.parent]; if (!par) return;
   const dx=n.x-par.x, dy=n.y-par.y, dz=(n.z||0)-(par.z||0);
-  n.orb.r   = Math.max(12, Math.hypot(dx,dy,dz));
-  n.orb.ang = Math.atan2(dy,dx);
+  const r = Math.max(12, Math.hypot(dx,dy,dz));
+  const o = n.orb;
+  // Re-aim the basis at where it was dropped and restart the angle there, so it carries
+  // on from the new spot instead of snapping back to the old ring.
+  o.r=r; o.ang=0; o.ux=dx/r; o.uy=dy/r; o.uz=dz/r;
+  const ax=0, ay=0, az=1;                       // keep the new plane upright and stable
+  let vx=ay*o.uz-az*o.uy, vy=az*o.ux-ax*o.uz, vz=ax*o.uy-ay*o.ux;
+  let vl=Math.hypot(vx,vy,vz);
+  if (vl<1e-6){ vx=o.uy; vy=-o.ux; vz=0; vl=Math.hypot(vx,vy,vz)||1; }
+  o.vx=vx/vl; o.vy=vy/vl; o.vz=vz/vl;
 }
 
 /* stepOrbits advances every orbit one frame. The sun stays pinned at the origin. */
@@ -3504,9 +3532,12 @@ function stepOrbits(dt){
     const o = n.orb; if (!o) return;
     const par = byId[o.parent]; if (!par) return;
     o.ang += o.speed*dt;
-    n.x = par.x + Math.cos(o.ang)*o.r;
-    n.y = par.y + Math.sin(o.ang)*o.r*o.cx;
-    n.z = (par.z||0) + Math.sin(o.ang)*o.r*o.sx;
+    // par + r*(u*cos + v*sin): a circle of radius r in the plane spanned by u and v,
+    // which at angle 0 is exactly where the node was when the orbit was captured.
+    const c=Math.cos(o.ang), sn=Math.sin(o.ang);
+    n.x = par.x + o.r*(o.ux*c + o.vx*sn);
+    n.y = par.y + o.r*(o.uy*c + o.vy*sn);
+    n.z = (par.z||0) + o.r*(o.uz*c + o.vz*sn);
   });
 }
 
