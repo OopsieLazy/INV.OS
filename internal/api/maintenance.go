@@ -330,6 +330,8 @@ type ServerInfo struct {
 	URLs      []string `json:"urls"`
 	TokenSet  bool     `json:"tokenSet"`
 	StartedAt int64    `json:"startedAt"`
+	// CanToggleLAN says whether the app may switch shop access on and off itself.
+	CanToggleLAN bool `json:"canToggleLan"`
 }
 
 // Info is filled in by main() at startup; the UI reads it for the `server` screen.
@@ -342,5 +344,12 @@ func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 		info.DBBytes = st.DBBytes
 	}
 	info.TokenSet = s.Token != ""
+	// LAN state is live, not whatever the flags said at startup — it can be toggled
+	// from the app now.
+	if s.LAN != nil {
+		info.LAN = s.LAN.Enabled()
+		info.URLs = append([]string{fmt.Sprintf("http://localhost:%d", info.Port)}, s.LAN.URLs()...)
+		info.CanToggleLAN = true
+	}
 	writeJSON(w, http.StatusOK, info)
 }

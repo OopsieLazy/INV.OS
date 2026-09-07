@@ -43,7 +43,8 @@ func run() error {
 		port    = flag.Int("port", 8137, "port to listen on")
 		lan     = flag.Bool("lan", false, "listen on all interfaces so shop devices can connect")
 		token   = flag.String("token", os.Getenv("INVOS_TOKEN"), "require this token on API calls (LAN deployments)")
-		open    = flag.Bool("open", true, "open the app in a browser on start")
+		open    = flag.Bool("open", true, "open the app on start")
+		window  = flag.Bool("window", true, "open as a desktop app window (false = a normal browser tab)")
 		verbose = flag.Bool("v", false, "verbose request logging")
 		showVer = flag.Bool("version", false, "print version and exit")
 	)
@@ -75,15 +76,12 @@ func run() error {
 	// The app's `server` screen shows where this station is reachable, so the info
 	// the flags decided is handed to the API layer rather than guessed at there.
 	api.Info = api.ServerInfo{
-		Version: version, Port: *port, LAN: *lan, StartedAt: time.Now().UnixMilli(),
-		URLs: append([]string{fmt.Sprintf("http://localhost:%d", *port)}, lanURLs(*lan, *port)...),
+		Version: version, Port: *port, StartedAt: time.Now().UnixMilli(),
 	}
 
-	host := "127.0.0.1"
-	if *lan {
-		host = "0.0.0.0"
-	}
-	addr := fmt.Sprintf("%s:%d", host, *port)
+	// The station's own listener is always loopback and always up, so toggling shop
+	// access can never cut off the person standing at the machine.
+	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
 	// Listen before announcing anything, so a port clash fails loudly instead of
 	// printing a URL that was never going to work.
@@ -98,8 +96,18 @@ func run() error {
 		IdleTimeout:       2 * time.Minute,
 	}
 
+	// Shop-wide access is a second listener the app can open and close on demand;
+	// -lan just decides whether it starts open.
+	shop := newLANSwitch(*port, httpSrv.Handler)
+	srv.LAN = shop
+	if *lan {
+		if err := shop.Enable(); err != nil {
+			return err
+		}
+	}
+
 	local := fmt.Sprintf("http://localhost:%d", *port)
-	banner(*dbPath, local, *lan, *port, *token != "")
+	banner(*dbPath, local, shop.Enabled(), *port, *token != "")
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -109,7 +117,7 @@ func run() error {
 	}()
 
 	if *open {
-		openBrowser(local)
+		openWindow(local, *window)
 	}
 
 	// Ctrl+C closes the listener and lets in-flight requests finish, so a shutdown
@@ -123,6 +131,7 @@ func run() error {
 		fmt.Println("\nshutting down…")
 	}
 
+	shop.Disable()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return httpSrv.Shutdown(ctx)
@@ -132,6 +141,9 @@ func banner(db, local string, lan bool, port int, tokened bool) {
 	fmt.Println("  INV.OS " + version)
 	fmt.Println("  database  " + db)
 	fmt.Println("  local     " + local)
+	if !lan {
+		fmt.Println("  shop      off — turn it on in the app, or start with -lan")
+	}
 	if lan {
 		for _, ip := range lanIPs() {
 			fmt.Printf("  shop      http://%s:%d\n", ip, port)
@@ -166,15 +178,27 @@ func lanIPs() []string {
 	if err != nil {
 		return out
 	}
+	// Prefer real private-network addresses. A machine typically also has link-local
+	// (169.254.x.x, from an adapter with no DHCP) and virtual-adapter addresses, and
+	// handing one of those to a tablet gives an address that will never answer.
+	var private4, other4 []string
 	for _, a := range addrs {
 		ipNet, ok := a.(*net.IPNet)
-		if !ok || ipNet.IP.IsLoopback() {
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
 			continue
 		}
-		if ip4 := ipNet.IP.To4(); ip4 != nil {
-			out = append(out, ip4.String())
+		ip4 := ipNet.IP.To4()
+		if ip4 == nil {
+			continue
+		}
+		if ip4.IsPrivate() {
+			private4 = append(private4, ip4.String())
+		} else {
+			other4 = append(other4, ip4.String())
 		}
 	}
+	out = append(out, private4...)
+	out = append(out, other4...)
 	return out
 }
 

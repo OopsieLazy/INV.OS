@@ -464,6 +464,50 @@ async function runChecks(page, t, consoleErrors) {
     (await page.evaluate(() => cfg('orbit'))) === 0);
   await t.key('Escape');
 
+  // ── shop access is a switch, not a restart ────────────────────────────────
+  // The claim being tested: a person can let the shop's tablets in from inside the
+  // app, and the station's own connection survives the change either way.
+  console.log(String.fromCharCode(10) + 'shop access (LAN toggle)');
+
+  const info0 = await api.get('/api/server');
+  check('starts closed to the network', info0.lan === false, `lan=${info0.lan}`);
+  check('the app is allowed to change it', info0.canToggleLan === true);
+
+  await t.run('lan on');
+  const info1 = await api.get('/api/server');
+  const shopUrls = (info1.urls || []).filter(u => !/localhost|127\.0\.0\.1/.test(u));
+  check('lan on opens shop access', info1.lan === true, `lan=${info1.lan}`);
+  check('it reports an address a tablet can type', shopUrls.length > 0,
+    JSON.stringify(info1.urls));
+  check('the advertised address is a real LAN address, not link-local',
+    shopUrls.every(u => !/\/\/169\.254\./.test(u)), JSON.stringify(shopUrls));
+
+  // the real proof: reach it on the LAN address, not loopback
+  if (shopUrls.length) {
+    const viaLan = await fetch(shopUrls[0] + '/api/health').then(r => r.ok).catch(() => false);
+    check('the station answers on its network address', viaLan, shopUrls[0]);
+  }
+  check('the local connection still works while shop access is on',
+    (await fetch(`${BASE}/api/health`)).ok);
+
+  await t.run('server');
+  const shopScreen = await t.screen();
+  check('the server screen shows shop access on', /shop access\s+ON/i.test(shopScreen),
+    shopScreen.slice(0, 300));
+  // Deliberately no QR here — the built-in encoder is version 1 (14 bytes), enough
+  // for a bin code but not a URL. See NOTES v22.2.
+
+  await t.run('lan off');
+  const info2 = await api.get('/api/server');
+  check('lan off closes it again', info2.lan === false, `lan=${info2.lan}`);
+  if (shopUrls.length) {
+    const stillOpen = await fetch(shopUrls[0] + '/api/health')
+      .then(r => r.ok).catch(() => false);
+    check('the network address stops answering', !stillOpen, 'it was still reachable');
+  }
+  check('the station itself is unaffected by closing shop access',
+    (await fetch(`${BASE}/api/health`)).ok);
+
   // ── every command runs without throwing ───────────────────────────────────
   // Parity sweep: the exe must not have a command that blows up where the HTML build
   // worked. This does not check what each one DOES — the checks above do that — it

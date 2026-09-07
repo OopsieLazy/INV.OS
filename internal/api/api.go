@@ -26,6 +26,8 @@ type Server struct {
 	// for LAN deployments where the shop network is not trusted; it is not an account
 	// system and is deliberately not one.
 	Token string
+	// LAN, when set, lets the app open and close shop-wide access while running.
+	LAN LANControl
 }
 
 // New builds the server. ui serves the embedded front-end.
@@ -71,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/meta/{key}", s.putMeta)
 
 	s.routeMaintenance(mux)
+	s.routeLAN(mux)
 
 	mux.Handle("/", s.ui)
 

@@ -481,6 +481,8 @@ const DB = {
   delPhoto(cid){ return this.del(`/api/items/${cid}/photo`); },
   photoURL(cid){ return `/api/items/${cid}/photo`; },
   exportAll(){ return this.get("/api/export"); },
+  serverInfo(){ return this.get("/api/server"); },
+  setLan(on){ return this.post("/api/lan", {on}); },
 
   viewComplete: true,   // does state.items currently hold every matching row?
 };
@@ -552,6 +554,14 @@ async function loadAll(what){
     print(`${what} could not read the inventory: ${e.message}`,"a");
     return false;
   }
+}
+
+/* Cached server info, so the titlebar can show shop-access state without asking on
+   every repaint. Refreshed on boot and whenever the switch is thrown. */
+let serverInfo = null;
+async function refreshServerInfo(){
+  try { serverInfo = await DB.serverInfo(); }catch(e){}
+  return serverInfo;
 }
 
 /* cached summary so the title bar and home screen do not re-query constantly */
@@ -1199,7 +1209,8 @@ const MENU = [
   {k:"health", d:"data integrity & storage status",  run:"health"},
   {k:"setup",  d:"name your shop, rename departments",  run:"setup"},
   {k:"sections",d:"add / rename / remove sections",     run:"sections"},
-  {k:"server", d:"connect an optional sync server",   run:"server"},
+  {k:"lan",    d:"let the shop's tablets in (on/off)", run:"server"},
+  {k:"server", d:"this station: address, QR, shop access", run:"server"},
   {k:"db",     d:"physical SQLite file (own your data)", run:"db"},
   {k:"rollback",d:"revert to an earlier saved state", run:"rollback"},
   {k:"install",d:"install as an app",                run:"install"},
@@ -1470,7 +1481,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -2130,6 +2141,24 @@ async function exec(line){
       return;
     }
 
+    case "lan": case "shop": {
+      const want=rest.trim().toLowerCase();
+      if (want!=="on" && want!=="off"){
+        // no argument: show the same screen the `server` command does
+        await run("server"); return;
+      }
+      let res;
+      try { res=await DB.setLan(want==="on"); }
+      catch(e){ print("could not change shop access: "+e.message,"a"); return; }
+      await refreshServerInfo(); updateBadge();
+      if (!res.lan){ print("shop access off — only this machine can reach the app now.","d"); return; }
+      print("shop access ON","g");
+      (res.urls||[]).forEach(u=>print("  "+u,"g"));
+      print("  devices on this network can open those and share this inventory. 'server' shows a QR code.","d");
+      if (res.unprotected) print("  no token set — anyone on the network can edit. restart with -token to require one.","a");
+      return;
+    }
+
     case "server": {
       out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
       print("SERVER","w"); print("");
@@ -2140,16 +2169,28 @@ async function exec(line){
       print("  and it owns the database. There is nothing to connect to.","d");
       print("");
       print("  version  "+info.version,"d");
-      (info.urls||[]).forEach((u,i)=>print((i?"           ":"  open at ")+u, i?"d":"g"));
-      print("  auth     "+(info.tokenSet?"token required (X-INVOS-Token)":"none"), info.tokenSet?"g":"d");
+      print("  shop access  "+(info.lan?"ON":"off"), info.lan?"g":"d");
+      print("  auth         "+(info.tokenSet?"token required (X-INVOS-Token)":"none"), info.tokenSet?"g":"d");
       print("");
       if (info.lan){
-        print("  Other devices in the shop can open the addresses above and they will be","d");
-        print("  looking at THIS inventory — same database, live.","d");
-        if (!info.tokenSet) print("  anyone on this network can edit inventory — restart with -token to require one","a");
+        const shopUrls=(info.urls||[]).filter(u=>!/localhost|127\.0\.0\.1/.test(u));
+        if (shopUrls.length){
+          print("  Open this on a tablet or phone on the same network:","w");
+          shopUrls.forEach(u=>print("    "+u,"g"));
+          // No QR here: the built-in encoder is version 1 only (14 bytes), which is
+          // right for a bin code like INV:1101 but cannot hold a URL. A QR that
+          // scans to nothing is worse than typing the address, so it stays out until
+          // the encoder handles larger versions.
+        } else {
+          print("  On, but no network address was found — is this machine on a network?","a");
+        }
+        print("");
+        if (!info.tokenSet) print("  no token set: anyone who can reach this machine can edit inventory","a");
+        print("  turn it off:  lan off","d");
       } else {
-        print("  Only this machine can reach it. To let the shop's tablets and phones in,","d");
-        print("  restart with:   invos -lan        (optionally  -token <secret>)","d");
+        print("  Only this machine can reach it right now.","d");
+        print("");
+        print("  let the shop in:  lan on        (the tablets get a URL and a QR code)","d");
       }
       return;
     }
@@ -4513,6 +4554,7 @@ function updateBadge(){
     const safe = d.nameFixes.length + d.fldFixes.length + d.exact.reduce((s,x)=>s+x.length-1,0);
     const n = safe + d.review.length;
     const pcs = summary.pieces;
+    const lanOn = serverInfo && serverInfo.lan;
     const ap=state.projects?.find(x=>x.pid===state.activePid);
     barl.innerHTML = state.shopName ? `<b>${esc(state.shopName)}</b>` : `<b>INVENTORY</b>`;
     const stale = state.lastBackup && (Date.now()-state.lastBackup > 6048e5);
@@ -4521,6 +4563,7 @@ function updateBadge(){
       + (stale && !backupHandle ? `<span class="warnpill" id="pbak" title="last backup is old">⁂ backup</span>` : ``)
       + (!lastSaveOk ? `<span class="warnpill" id="phealth" title="save failed — open health">⚠ save</span>` : ``)
       + (n ? `<span class="warnpill" id="pdoc" title="doctor report (F2)">▲ ${n}</span>` : ``)
+      + (lanOn ? `<span class="warnpill" id="plan" title="shop access is ON — other devices can reach this inventory">◉ shop</span>` : ``)
       + `<span class="barbtn" id="pgraph" title="node graph (F3)">graph</span>`
       + `<span class="barbtn" id="ptheme" title="theme &amp; display">theme</span>`
       + `<span class="barbtn" id="pset" title="settings">settings</span>`
@@ -4533,6 +4576,7 @@ barr.addEventListener("click", async e=>{
   if (id==="pinst")  return void await run("install");
   if (id==="pbak")   return void await run("backup");
   if (id==="ptheme") return void await run("theme");
+  if (id==="plan")   return void await run("server");
   if (id==="pgraph") return void await run("graph 3d");
   if (id==="pset")   return void await run("settings");
   if (id==="phelp")  return void await run("help");
@@ -4547,6 +4591,7 @@ load().then(async ()=>{
   document.body.classList.toggle("bar-off", !!state.barOff);
   await loadProjects();
   await refreshPhotoIds();
+  await refreshServerInfo();
   if (state.firstRun && !state.shopName){
     updateBadge(); firstRun(); cmd.focus();
   } else { updateBadge(); home(); cmd.focus(); }

@@ -1561,3 +1561,54 @@ orbit mode.
 ## Verified
 66 UI checks (8 new): the galaxy setting neutralises the command, the view cycle and the
 menu, comes back when switched on, and the orbit toggle records itself both ways.
+
+---
+
+# v22.2 — a real app window, and shop access as a switch
+
+## "It feels web-based"
+It was already a native program — one Go binary owning a SQLite database — but it drew
+itself in a browser TAB, which is what made it feel like a web page.
+
+`invos.exe` now opens a proper application window: Chromium app mode (`--app=`) with its
+own profile directory. No tabs, no address bar, no bookmarks, its own taskbar entry and
+icon. `-window=false` goes back to a normal browser tab.
+
+Deliberately NOT an embedded webview. A webview means cgo, and cgo costs the single
+static binary and the trivial cross-compile to a Raspberry Pi — a bad trade for a window
+frame. Every Windows 10/11 machine has Edge; the kiosk boxes already run Chromium. If
+the browser dependency ever becomes a problem, WebView2/WebKitGTK is the upgrade, and it
+does not change anything above the launcher.
+
+## Shop access is a switch now, not a restart
+`-lan` used to be a startup flag. It is a toggle:
+- `lan on` / `lan off` from the prompt, a `◉ shop` pill in the title bar while it is on,
+  and the `server` screen shows the state and the address a tablet should open.
+- The station's own listener is ALWAYS loopback and always up, so throwing the switch
+  can never cut off the person standing at the machine.
+
+Two bugs found by testing this, both of which would have shipped:
+
+1. **The advertised address was junk.** `lanIPs()` returned every non-loopback IPv4,
+   which on a real machine includes link-local (169.254.x.x, from an adapter with no
+   DHCP) and virtual adapters. The first one won, so the tablet got an address that
+   will never answer. Now real private ranges are preferred and link-local is dropped.
+   Verified: it advertises 192.168.2.56, not 169.254.233.28.
+
+2. **"Off" did not mean off.** Closing a listener stops NEW connections, but a tablet
+   holding a keep-alive connection carried on being served after shop access was
+   switched off. The shop listener now has its own `http.Server`, which can be Closed —
+   dropping the listener AND every connection on it. The test proves the network
+   address stops answering while the local one keeps working.
+
+## No QR code (yet)
+The plan was to show a QR so a phone could join by camera. The built-in encoder is
+version 1 only — 14 bytes, which is right for a bin code like `INV:1101` and far too
+small for a URL. It returned null and drew nothing. A QR that scans to nothing is worse
+than typing the address, so it is left out until the encoder handles larger versions.
+Roadmap item, not a silent gap.
+
+## Verified
+77 UI checks (11 new): shop access starts closed, `lan on` opens it and reports a real
+LAN address, the station answers on that address, the local connection is unaffected
+either way, `lan off` closes it, and the network address genuinely stops answering.
