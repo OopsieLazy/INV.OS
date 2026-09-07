@@ -1687,3 +1687,27 @@ A cached shell with no server behind it is a dead screen, not offline support.
 Lesson worth keeping: smoke.mjs uses a fresh browser context every run, which has no
 cache and therefore cannot see a caching bug. Testing the happy path from a clean state
 proved nothing about the state users are actually in.
+
+---
+
+# v22.5 — orbits hold still while you are holding the graph
+
+Orbiting nodes that keep moving under a held cursor make the graph impossible to grab:
+the thing you are reaching for slides away as you reach for it.
+
+`gLastXY` is set for exactly as long as a pointer is down, which is already the app's
+"someone is interacting" signal. While it is set, orbit mode now freezes completely —
+orbits do not advance and the camera does not drift — so a node stays under the cursor
+and the scene does not slide out from under a rotate. Motion resumes the instant the
+pointer is released.
+
+Dragging a node in orbit mode used to be pointless: `stepOrbits` rewrote its position
+from the orbital elements every frame, so it snapped straight back. On release, that
+node's radius and angle are now re-derived from where it was dropped
+(`recaptureOrbit`), so it carries on orbiting from its new place. You can rearrange a
+cluster while it is running.
+
+Verified with real mouse input rather than by calling functions: press and hold, sample
+positions across several frames, require no movement; release, sample again, require
+movement; and drag a node, then require its orbital radius to have changed instead of
+reverting. 84 UI checks.

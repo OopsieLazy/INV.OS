@@ -333,6 +333,54 @@ async function runChecks(page, t, consoleErrors) {
     });
   }));
 
+  // ── holding the pointer must stop the motion ──────────────────────────────
+  // Orbits that keep moving under a held cursor make the graph impossible to grab:
+  // the thing you are reaching for slides away.
+  const canvasBox = await (await page.$('#gcanvas')).boundingBox();
+  const mid = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 };
+
+  await page.mouse.move(mid.x, mid.y);
+  await page.mouse.down();
+  await page.waitForTimeout(120);              // let a few frames go by while held
+  const held1 = await sample();
+  await page.waitForTimeout(450);
+  const held2 = await sample();
+  check('orbits freeze while the pointer is held', !drifted(held1, held2),
+    `moved while held: ${JSON.stringify(held1[0])} -> ${JSON.stringify(held2[0])}`);
+
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  const freed1 = await sample();
+  await page.waitForTimeout(450);
+  const freed2 = await sample();
+  check('orbits resume once the pointer is released', drifted(freed1, freed2),
+    `still frozen after release: ${JSON.stringify(freed1[0])}`);
+
+  // a node dragged in orbit mode keeps its new distance instead of snapping back
+  const dragged = await page.evaluate(() => {
+    const n = gNodes.find(x => x.orb);
+    return n ? { id: n.id, r: n.orb.r } : null;
+  });
+  if (dragged) {
+    await page.evaluate((id) => {
+      // drive the same path a real drag uses, then release
+      const n = gNodes.find(x => x.id === id);
+      gDrag = n; gLastXY = [0, 0];
+      n.x += 60; n.y += 40;
+    }, dragged.id);
+    await page.mouse.move(mid.x + 5, mid.y + 5);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    const afterDrag = await page.evaluate((id) => {
+      const n = gNodes.find(x => x.id === id);
+      return n && n.orb ? n.orb.r : null;
+    }, dragged.id);
+    check('a dragged node keeps its new orbit rather than snapping back',
+      afterDrag !== null && Math.abs(afterDrag - dragged.r) > 1,
+      `radius ${dragged.r} -> ${afterDrag}`);
+  }
+
   await t.run('graph orbit');
   check('graph orbit turns the mode off again',
     (await page.evaluate(() => gOrbit)) === false);

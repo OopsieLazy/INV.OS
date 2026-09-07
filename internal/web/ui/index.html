@@ -3372,6 +3372,18 @@ function initOrbits(){
   gOrbitInit = true;
 }
 
+/* recaptureOrbit re-derives ONE node's orbital elements from where it currently sits.
+   Used after a drag: the node keeps the radius and angle you left it at and carries on
+   from there, instead of snapping back to where its orbit used to be. */
+function recaptureOrbit(n){
+  if (!n || !n.orb) return;
+  const byId={}; gNodes.forEach(x=>byId[x.id]=x);
+  const par=byId[n.orb.parent]; if (!par) return;
+  const dx=n.x-par.x, dy=n.y-par.y, dz=(n.z||0)-(par.z||0);
+  n.orb.r   = Math.max(12, Math.hypot(dx,dy,dz));
+  n.orb.ang = Math.atan2(dy,dx);
+}
+
 /* stepOrbits advances every orbit one frame. The sun stays pinned at the origin. */
 function stepOrbits(dt){
   const byId = {};
@@ -3396,9 +3408,14 @@ function gTick(){
   if (gOrbit && (gView.kind==="galaxy" || gView.kind==="projects")){
     if (a<=0.05 && !gOrbitInit) initOrbits();
     if (gOrbitInit){
-      stepOrbits(1);
+      // gLastXY is set for exactly as long as a pointer is held down. While it is,
+      // everything stops: orbits do not advance and the camera does not drift, so a
+      // node stays under the cursor and the scene does not slide out from under a
+      // rotate. Motion resumes the moment the pointer is released.
+      const held = !!gLastXY;
+      if (!held) stepOrbits(1);
       gAlpha = 0.001;
-      if (g3d && gAutoRot) gYaw += cfg("driftSpeed");
+      if (g3d && gAutoRot && !held) gYaw += cfg("driftSpeed");
       gDraw();
       if (graphMode==="off" && !gPopped()){ gRAF=null; return; }
       gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
@@ -3734,6 +3751,7 @@ function bindGraphPointer(cv, win){
         if (n.cmd){ await run(n.cmd); if(!gPopped()) cmd.focus(); }
       }
     }
+    if (gOrbit && gDrag) recaptureOrbit(gDrag);   // carry on from where it was dropped
     gDrag=null; gPanning=false; gLastXY=null; cv.style.cursor="grab";
   });
   cv.addEventListener("wheel", e=>{
@@ -3768,6 +3786,7 @@ function bindGraphPointer(cv, win){
         if (n.cmd){ await run(n.cmd); }
       }
     }
+    if (gOrbit && gDrag) recaptureOrbit(gDrag);
     gDrag=null; gPanning=false; gLastXY=null;
   });
 }
