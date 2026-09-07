@@ -135,3 +135,30 @@ Note: true multi-device usefulness needs Phase D.
 - Phase D (multi-user) is gated on the user actually running a server ("later").
 - Phase E (discovery) is delight, best once the core is stable.
 - Distribution runs in parallel whenever there's appetite; it's not a code dependency.
+
+═══════════════════════════════════════════════════════════════
+## TRACKS (added 2026-09-06 — repo went to git, two branches)
+═══════════════════════════════════════════════════════════════
+
+### `html-demo` — the free demo (FROZEN)
+Frozen at tag `html-demo-v20.2` = the full single-file HTML app as it shipped.
+Public-facing: upload for feedback/views. No new features land here.
+- [ ] D1 strip-down pass before publishing: decide what the demo does NOT get
+      (candidates: photos, cycle-count, physical .db mirror, server sync, galaxy)
+- [ ] D2 demo-mode guard: seed data only, cap item count, "get the full version" nudge
+- [ ] D3 landing page + short screen-capture clip
+
+### `main` — INV.OS the product (the exe)
+Single Go binary. Embeds the UI, owns a real SQLite database, serves itself on the
+LAN so shop tablets/phones hit the same inventory. Same codebase becomes the SaaS.
+- [ ] P1 scaffold: go:embed UI, SQLite schema (relational, not blob), REST API
+- [ ] P2 port the UI off the in-memory JSON blob onto the API (the RAM fix)
+- [ ] P3 legacy import: read a v20.2 browser export / invos.db straight in
+- [ ] P4 stress test: 100k items / 500 projects — RAM ceiling, query latency, startup
+- [ ] P5 LAN mode: bind 0.0.0.0, device discovery, concurrent-edit behavior
+- [ ] P6 packaging: signed .exe, Linux + Pi builds, one-command install
+- [ ] P7 SaaS: multi-tenant behind the same Store interface (Postgres driver swap)
+
+Postgres is NOT planned for the shop product — SQLite handles the volume a shop will
+ever reach. It comes in only if/when SaaS multi-tenancy needs it, which is why all
+data access sits behind one Store interface from day one.
