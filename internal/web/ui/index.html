@@ -1258,6 +1258,56 @@ function renderSettings(focusKey){
   print("");
   { const d=document.createElement("div"); d.className="line idx d"; d.dataset.menu="run:cfgreset";
     d.textContent="  reset all to defaults"; out.appendChild(d); }
+
+  /* STATION — this machine, not the look of the app. Shop access belongs here
+     because it is the setting people actually go looking for: "how do I get this
+     on the tablet". It was previously only reachable by typing `lan on`. */
+  print(""); print("STATION","w");
+  {
+    const on = !!(serverInfo && serverInfo.lan);
+    const d = document.createElement("div");
+    d.className = "line idx g";
+    d.dataset.menu = "run:__lantoggle";
+    const name = document.createElement("span");
+    name.className = "c"; name.textContent = "  " + "shop access".padEnd(16);
+    const val = document.createElement("span");
+    val.className = on ? "" : "d";
+    val.textContent = " " + (on ? "on" : "off").padStart(5) + " ";
+    const hint = document.createElement("span");
+    hint.className = "d";
+    hint.textContent = on ? "  tablets and phones can reach this inventory — click to close"
+                          : "  click to let the shop's tablets and phones in";
+    d.appendChild(name); d.appendChild(val); d.appendChild(hint);
+    out.appendChild(d);
+
+    if (on){
+      (serverInfo.urls || [])
+        .filter(u => !/localhost|127\.0\.0\.1/.test(u))
+        .forEach(u => print("                    " + u, "g"));
+      if (serverInfo && !serverInfo.tokenSet)
+        print("                    no token — anyone on this network can edit","a");
+    }
+
+    // window mode is decided at launch, so it is stated rather than offered as a
+    // toggle that would silently do nothing
+    const standalone = matchMedia("(display-mode: standalone)").matches
+      || !window.locationbar || window.locationbar.visible === false;
+    print("  window           " + (standalone ? "app window" : "browser tab")
+      + "   (invos -window=false for a tab)", "d");
+    if (serverInfo) print("  build            " + (serverInfo.build || "?")
+      + (updateReady ? "   ⟳ a newer build is running — reload" : ""), updateReady ? "a" : "d");
+  }
+
+  // the shop-access row reads cached server state; refresh it and repaint if it moved
+  if (!renderSettings.refreshing){
+    renderSettings.refreshing = true;
+    const wasLan = !!(serverInfo && serverInfo.lan);
+    refreshServerInfo().then(()=>{
+      renderSettings.refreshing = false;
+      if (!!(serverInfo && serverInfo.lan) !== wasLan && out.querySelector('[data-menu="run:__lantoggle"]'))
+        renderSettings(focusKey);
+    }).catch(()=>{ renderSettings.refreshing = false; });
+  }
   // restore selection on the row we just adjusted so ←/→ keeps working
   if (focusKey){
     const rows=[...out.querySelectorAll("[data-cfg]")];
@@ -1505,7 +1555,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -2165,6 +2215,14 @@ async function exec(line){
       print("");
       print("  db export     download a consistent copy right now","d");
       print("  backup        download everything as JSON instead","d");
+      return;
+    }
+
+    case "__lantoggle": {
+      const on = !!(serverInfo && serverInfo.lan);
+      await run("lan " + (on ? "off" : "on"));
+      await refreshServerInfo();
+      renderSettings();
       return;
     }
 

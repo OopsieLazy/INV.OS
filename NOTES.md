@@ -1740,3 +1740,34 @@ to the window after an update happened behind it.
 open window to notice by itself, say so on screen, show the pill, and clear the notice
 after a reload. 7 checks. Also confirmed a UI change actually produces a different
 build id, so the mechanism cannot silently no-op.
+
+---
+
+# v22.7 — shop access is in Settings, where people look for it
+
+`lan on` worked, but a command nobody knows exists is not a feature. "How do I get this
+on the tablet" is a settings question, so the settings screen now has a STATION section
+below the display sliders:
+
+    STATION
+      shop access        on    tablets and phones can reach this inventory — click to close
+                         http://192.168.2.56:8137
+      window             app window   (invos -window=false for a tab)
+      build              681f788d
+
+The shop-access row is a click target (and Enter works on it like any other row). It
+flips the switch, then repaints the section in place so the state and the address update
+without leaving the screen.
+
+Window mode is STATED rather than offered as a toggle. It is decided when the exe
+launches, and a switch that silently did nothing until the next restart would be worse
+than a sentence explaining the flag.
+
+The galaxy and orbit toggles from v22.1 were already in this screen as on/off rows —
+they just were not obvious next to the numeric sliders. The STATION heading gives the
+non-cosmetic settings a place to live.
+
+## Verified
+90 UI checks. The new ones drive it the way a person would: open settings, confirm the
+section and the state, CLICK the row, and require the server to actually close shop
+access and the screen to repaint showing "off" — then click again and require it back on.

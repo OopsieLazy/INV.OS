@@ -579,6 +579,34 @@ async function runChecks(page, t, consoleErrors) {
   // Deliberately no QR here — the built-in encoder is version 1 (14 bytes), enough
   // for a bin code but not a URL. See NOTES v22.2.
 
+  // the same switch has to be reachable without knowing the command exists
+  await t.run('settings');
+  const settingsScreen = await t.screen();
+  check('settings has a STATION section with shop access',
+    /STATION/.test(settingsScreen) && /shop access/.test(settingsScreen),
+    settingsScreen.slice(-300));
+  check('settings shows shop access as on', /shop access\s+on/i.test(settingsScreen),
+    settingsScreen.slice(-300));
+
+  // clicking the row is how a person would actually turn it off
+  const row = await page.$('[data-menu="run:__lantoggle"]');
+  check('the shop-access row is clickable', row !== null);
+  if (row) {
+    await row.click();
+    await page.waitForTimeout(600);
+    const afterClick = await api.get('/api/server');
+    check('clicking the row closes shop access', afterClick.lan === false,
+      `lan=${afterClick.lan}`);
+    check('the settings screen repaints with the new state',
+      /shop access\s+off/i.test(await t.screen()), (await t.screen()).slice(-260));
+    await row.click().catch(() => {});   // row was replaced by the repaint
+    const back = await page.$('[data-menu="run:__lantoggle"]');
+    if (back) { await back.click(); await page.waitForTimeout(600); }
+    check('clicking again reopens it',
+      (await api.get('/api/server')).lan === true);
+  }
+  await t.key('Escape');
+
   await t.run('lan off');
   const info2 = await api.get('/api/server');
   check('lan off closes it again', info2.lan === false, `lan=${info2.lan}`);
