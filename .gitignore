@@ -22,3 +22,7 @@ invos-test.exe
 invos.exe~
 invos-stale.exe
 invos-recover.exe
+test/ui/*.png
+invos-bench.exe
+invos-shot.exe
+invos-upd.exe

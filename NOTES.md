@@ -1818,3 +1818,75 @@ when it is showing a sample.
 91 UI checks. The new one asserts the FLAG rather than the picture: every item the
 database reports as low must have `low === true` on its graph node. Checking "did it
 render" could never have caught this.
+
+---
+
+# v23.0 — the graph scales: 1,000 nodes -> 20,000, and it looks like a galaxy
+
+Measured first, because "make it faster" without numbers is guesswork. `test/ui/graph-bench.mjs`
+times the simulation and the drawing SEPARATELY — they have different costs and different
+fixes, and timing them together tells you nothing about which to work on.
+
+## Baseline
+     nodes   physics    draw     total     fps
+       500     2.7ms    1.2ms     3.9ms    254
+      1500    17.0ms    3.7ms    20.7ms     48
+      5000   198.9ms   10.3ms   209.3ms      5
+     15000  1702.8ms   31.9ms  1734.7ms      1
+Physics was 98% of it and grew with the SQUARE of the node count: repulsion compared
+every node against every other. Drawing was never the problem.
+
+## What changed
+**Spatial grid instead of all-pairs.** Above 1,200 nodes, parts only repel neighbours
+within one cell radius. Below that the exact solver still runs, so a normal shop's graph
+is bit-for-bit what it always was. The long-range spreading the exact solver provided is
+produced explicitly instead: HUBS (sun, departments, sections, project cores) still repel
+each other exactly — there are only ever a handful — and they are what pushes clusters
+into separate galaxies.
+
+**A neighbour cap.** A dense clump puts hundreds of nodes in one cell and the inner loop
+goes quadratic again in a smaller box. Past ~12 near neighbours the extra shoves all point
+the same way anyway.
+
+**Parts become pixels.** Past 4,000 nodes the cost was CALLS, not pixels: every node was a
+globalAlpha, a beginPath, an arc, a fillStyle and a fill — twice, because the bright core
+is a second circle — and every edge its own stroke. Part positions are now written straight
+into an image buffer and blitted once, the way a falling-sand game paints its world.
+Brightness accumulates where stars overlap, which is what gives a dense cluster a glowing
+core. Hubs stay real drawn shapes with labels; there are only ever a hundred of them.
+
+## Three bugs the screenshots caught that the numbers did not
+The benchmark went green while the picture was still wrong. Rendering fast is not the same
+as rendering something.
+
+1. **The simulation was exploding.** Coordinates reached 1e49. Forward-Euler plus springs
+   that pull harder the further they stretch: anything flung far gets yanked back harder,
+   overshoots further, diverges. Fixed with a per-frame speed cap (generous enough that a
+   normal graph never reaches it) and a minimum separation so coincident nodes cannot
+   divide by ~zero.
+2. **The camera never zoomed out.** The layout spreads as nodes are added but the view
+   opened at a fixed zoom, leaving everything off screen. It now fits the content — but
+   never closer than the configured launch zoom, so a small shop's graph is unchanged, and
+   it stops fitting the moment you zoom or pan yourself.
+3. **Clusters did not grow with what they held.** A fixed spring length put 200 parts and
+   3 parts the same distance from their hub, so a big shelf collapsed into a dot. Radius
+   now grows with the square root of the count.
+
+## And one quiet lie
+`GRAPH_ITEM_CAP` was 1,500 but the fetch asked for it in ONE request while the server caps
+a page at 1,000 — so the graph had been drawing 1,000 nodes and the constant was wrong.
+It pages now, and the cap is 20,000.
+
+## After
+     nodes   physics    draw     total     fps
+      1500     1.2ms    4.7ms     5.9ms    170
+      5000     4.0ms    2.1ms     6.0ms    166
+     20000    11.5ms    1.7ms    13.2ms     76   <- the new cap
+     50000    32.3ms    4.0ms    36.2ms     28
+    100000    72.6ms    7.9ms    80.5ms     12
+15,000 nodes went from 1,735ms a frame to about 10ms — roughly 170x. 100,000 nodes is
+now merely slow rather than impossible, at 78MB of heap.
+
+91 UI checks still pass. `test/ui/graph-shot.mjs` seeds a large inventory and screenshots
+the result, because this is the kind of work where the numbers can be perfect and the
+picture still wrong.

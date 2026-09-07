@@ -3197,14 +3197,28 @@ async function exec(line){
    a force simulation over 100,000 nodes is neither drawable nor useful, so the
    inventory view draws the first GRAPH_ITEM_CAP parts and the label says when it is
    showing a sample. */
-const GRAPH_ITEM_CAP = 1500;
+/* How many parts the graph will draw. Raised from 1,500 once the renderer stopped
+   drawing each one as shapes — measured at 20,000 nodes the frame costs about 13ms,
+   which leaves room to spare at 60fps.
+
+   It used to ask for 1,500 in a single request while the server caps a page at 1,000,
+   so the graph was quietly drawing 1,000 and the constant was lying. It pages now. */
+const GRAPH_ITEM_CAP = 20000;
+const GRAPH_PAGE = 1000;              // the server's own per-request ceiling
 let graphItems = [], graphItemsTotal = 0;
 let graphItemsLoaded = false, graphItemsLoading = false;
 
 async function refreshGraphItems(){
   try {
-    const page = await DB.peek({limit:GRAPH_ITEM_CAP, sort:"bin"});
-    graphItems = page.rows; graphItemsTotal = page.total;
+    const out = [];
+    let total = 0;
+    while (out.length < GRAPH_ITEM_CAP){
+      const page = await DB.peek({limit:GRAPH_PAGE, offset:out.length, sort:"bin"});
+      total = page.total;
+      out.push(...page.rows);
+      if (!page.rows.length || out.length >= page.total) break;
+    }
+    graphItems = out; graphItemsTotal = total;
     graphItemsLoaded = true;
   } catch(e){ graphItems = []; graphItemsTotal = 0; }
 }
@@ -3291,9 +3305,13 @@ function buildGraphData(){
   const addN=(id,type,label,extra={})=>{
     if (nid.has(id)) return nid.get(id);
     const prev=old.get(id);
+    // Starting spread grows with the graph. Dropping 20,000 nodes into the same ±30
+    // box the demo uses means they all start on top of each other, and the first frame
+    // is one enormous shove outward.
+    const spread = 60 * Math.max(1, Math.cbrt(Math.max(1, gNodes.length || 1)) / 2);
     const n={id,type,label,...extra,
-      x:prev?prev.x:(Math.random()-0.5)*60, y:prev?prev.y:(Math.random()-0.5)*60,
-      z:prev&&prev.z!==undefined?prev.z:(Math.random()-0.5)*60,
+      x:prev?prev.x:(Math.random()-0.5)*spread, y:prev?prev.y:(Math.random()-0.5)*spread,
+      z:prev&&prev.z!==undefined?prev.z:(Math.random()-0.5)*spread,
       vx:0, vy:0, vz:0};
     nid.set(id,n); nodes.push(n); return n;
   };
@@ -3484,6 +3502,207 @@ function stepOrbits(dt){
   });
 }
 
+/* ── the force simulation ────────────────────────────────────────────────────
+   Split out of gTick so it can be profiled on its own: the simulation and the drawing
+   have completely different costs and completely different fixes, and timing them
+   together tells you nothing about which one to work on.
+
+   Measured before any of this existed: repulsion compared every node against every
+   other, so cost grew with the SQUARE of the node count. 500 nodes cost 2.7ms a frame;
+   15,000 cost 1.7 SECONDS. That is the wall, and drawing was never the problem.
+
+   Two paths now:
+   - small graphs keep the exact all-pairs solver, so the shape of a normal shop's
+     graph is bit-for-bit what it always was
+   - large graphs switch to a spatial grid, which only compares nodes that are near
+     enough to matter
+
+   The grid drops the long-range part-to-part repulsion that the exact solver has. That
+   sounds lossy, but the structure it was producing is better produced explicitly: HUBS
+   (the sun, departments, sections, project cores) still repel each other exactly —
+   there are only ever a handful — and they are what pushes clusters apart into
+   separate galaxies. Parts only shove their immediate neighbours so stars do not
+   overlap. Same picture, without the n². */
+
+// Above this many nodes, switch from exact all-pairs to the spatial grid. Below it the
+// exact solver is both affordable and visually identical to every earlier build.
+const PHYSICS_EXACT_MAX = 1200;
+// How far a part's shove reaches in the grid solver, and therefore the cell size.
+const REPEL_RADIUS = 170;
+// Most neighbours one part will be shoved by per cell. Without a cap, a dense clump
+// puts hundreds of nodes in one cell and the inner loop goes quadratic again — the n²
+// problem back in a smaller box. Past a handful of near neighbours the extra shoves are
+// redundant anyway: they all point roughly the same way.
+const REPEL_NEIGHBOUR_CAP = 12;
+
+function isHub(n){
+  return n.type==="sun" || n.type==="dept" || n.type==="sec" || n.type==="proj";
+}
+
+/* exact all-pairs repulsion — the original, unchanged */
+function gRepelExact(a){
+  const N=gNodes.length;
+  for (let i=0;i<N;i++) for (let j=i+1;j<N;j++){
+    const p=gNodes[i], q=gNodes[j];
+    let dx=p.x-q.x, dy=p.y-q.y, dz=g3d?(p.z-q.z):0;
+    let d2=dx*dx+dy*dy+dz*dz||0.01, d=Math.sqrt(d2);
+    // galaxy: cores push each other MUCH harder -> clusters separate, dark space between
+    const coreRep = ((gView.kind==="galaxy"||gView.kind==="projects") && p.core && q.core) ? 60 : 1;
+    const f=900*a*coreRep/d2;
+    dx/=d; dy/=d; dz/=d;
+    p.vx+=dx*f; p.vy+=dy*f; q.vx-=dx*f; q.vy-=dy*f;
+    if (g3d){ p.vz+=dz*f; q.vz-=dz*f; }
+  }
+}
+
+/* Cell key for the spatial hash. Ten bits per axis: cells more than 1024 apart can
+   collide, which at this cell size is far outside anything on screen, and a collision
+   only ever costs one spurious neighbour check. */
+function cellKey(ix,iy,iz){
+  return ((ix & 1023)) | ((iy & 1023) << 10) | ((iz & 1023) << 20);
+}
+
+// The 13 forward neighbours plus self, so every pair of cells is visited exactly once.
+const CELL_OFFSETS = (() => {
+  const out = [[0,0,0]];
+  for (let dx=-1;dx<=1;dx++) for (let dy=-1;dy<=1;dy++) for (let dz=-1;dz<=1;dz++){
+    if (dx===0&&dy===0&&dz===0) continue;
+    if (dz>0 || (dz===0 && (dy>0 || (dy===0 && dx>0)))) out.push([dx,dy,dz]);
+  }
+  return out;
+})();
+
+/* grid repulsion: hubs exactly, parts only against near neighbours */
+function gRepelGrid(a){
+  const N=gNodes.length;
+  const hubs=[], parts=[];
+  for (let i=0;i<N;i++) (isHub(gNodes[i]) ? hubs : parts).push(gNodes[i]);
+
+  // Hubs are few and carry the layout, so they keep the exact treatment — including
+  // the core-vs-core boost that opens dark space between clusters.
+  const galaxyish = (gView.kind==="galaxy"||gView.kind==="projects");
+  for (let i=0;i<hubs.length;i++) for (let j=i+1;j<hubs.length;j++){
+    const p=hubs[i], q=hubs[j];
+    let dx=p.x-q.x, dy=p.y-q.y, dz=g3d?(p.z-q.z):0;
+    let d2=dx*dx+dy*dy+dz*dz||0.01, d=Math.sqrt(d2);
+    const coreRep = (galaxyish && p.core && q.core) ? 60 : 1;
+    const f=900*a*coreRep/d2;
+    dx/=d; dy/=d; dz/=d;
+    p.vx+=dx*f; p.vy+=dy*f; q.vx-=dx*f; q.vy-=dy*f;
+    if (g3d){ p.vz+=dz*f; q.vz-=dz*f; }
+  }
+
+  // Bucket the parts. Rebuilt every frame, which is O(n) and cheaper than keeping it
+  // up to date while everything moves.
+  const cells = new Map();
+  const inv = 1/REPEL_RADIUS;
+  for (let i=0;i<parts.length;i++){
+    const n=parts[i];
+    const k = cellKey(Math.floor(n.x*inv), Math.floor(n.y*inv), g3d?Math.floor(n.z*inv):0);
+    let b = cells.get(k);
+    if (!b){ b=[]; cells.set(k,b); }
+    b.push(n);
+  }
+
+  const R2 = REPEL_RADIUS*REPEL_RADIUS;
+  for (const [k, bucket] of cells){
+    // decode this cell so neighbours can be addressed
+    const ix = (k & 1023), iy = ((k >> 10) & 1023), iz = ((k >> 20) & 1023);
+    for (let o=0;o<CELL_OFFSETS.length;o++){
+      const [ox,oy,oz]=CELL_OFFSETS[o];
+      const other = (ox===0&&oy===0&&oz===0)
+        ? bucket
+        : cells.get(cellKey(ix+ox, iy+oy, iz+oz));
+      if (!other) continue;
+      const same = other===bucket;
+      for (let i=0;i<bucket.length;i++){
+        const p=bucket[i];
+        const from = same ? i+1 : 0;
+        const to = Math.min(other.length, from + REPEL_NEIGHBOUR_CAP);
+        for (let j = from; j<to; j++){
+          const q=other[j];
+          let dx=p.x-q.x, dy=p.y-q.y, dz=g3d?(p.z-q.z):0;
+          let d2=dx*dx+dy*dy+dz*dz;
+          if (d2>R2) continue;            // out of reach: the whole point of the grid
+          // Two nodes on top of each other would otherwise divide by ~0 and fling each
+          // other across the universe. Four is (2 units)²: close enough to shove hard,
+          // not close enough to explode.
+          if (d2<4) d2=4;
+          const d=Math.sqrt(d2);
+          const f=900*a/d2;
+          dx/=d; dy/=d; dz/=d;
+          p.vx+=dx*f; p.vy+=dy*f; q.vx-=dx*f; q.vy-=dy*f;
+          if (g3d){ p.vz+=dz*f; q.vz-=dz*f; }
+        }
+      }
+    }
+  }
+}
+
+/* springs pull connected things together — O(edges), never the bottleneck */
+function gSprings(a){
+  const galaxyish=(gView.kind==="galaxy"||gView.kind==="projects");
+  for (let i=0;i<gEdges.length;i++){
+    const e=gEdges[i];
+    const trail = e.w<0;               // inter-project "trail" — visual only, negligible pull
+    const proj=(e.a.type==="proj"||e.b.type==="proj");
+    // A cluster has to grow with what it holds. With a fixed rest length every shelf
+    // sits the same distance from its hub, so a section with 200 parts packs them into
+    // the same ball as one with 3 and the whole graph collapses to a dot at scale.
+    // Radius grows as the square root of the count — the area a ball of k things needs —
+    // which turns a big shelf into a visible cluster instead of a pixel.
+    const hub = (e.a.type==="sec"||e.a.type==="dept"||e.a.type==="proj") ? e.a
+              : (e.b.type==="sec"||e.b.type==="dept"||e.b.type==="proj") ? e.b : null;
+    const spread = (hub && hub.count>4) ? Math.min(9, Math.sqrt(hub.count)/1.6) : 1;
+    const rest = (proj ? (galaxyish?520:70)
+               : (e.a.type==="dept"||e.b.type==="dept") ? 85 : 55) * spread;
+    let dx=e.b.x-e.a.x, dy=e.b.y-e.a.y, dz=g3d?(e.b.z-e.a.z):0;
+    let d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.01;
+    const f=(d-rest)*(trail?0.002:0.045)*a;   // trails barely tug -> don't collapse the spacing
+    dx/=d; dy/=d; dz/=d;
+    e.a.vx+=dx*f; e.a.vy+=dy*f; e.b.vx-=dx*f; e.b.vy-=dy*f;
+    if (g3d){ e.a.vz+=dz*f; e.b.vz-=dz*f; }
+  }
+}
+
+/* gentle pull to the middle, then move everything — O(nodes) */
+/* Speed limit. This is a plain forward-Euler integrator, and springs pull harder the
+   further they are stretched — so once anything gets flung far, the spring yanks it
+   back even harder, it overshoots further, and the whole layout diverges. Measured at
+   20,000 nodes it reached coordinates of 1e49 within a few seconds: not a slow layout,
+   a numerically exploded one.
+
+   Capping how far a node may move in one frame makes that impossible. It is generous
+   enough that a normal graph never reaches it — settled motion is a couple of units a
+   frame — so the small-graph behaviour is untouched. */
+const MAX_STEP = 120;
+
+function gIntegrate(a){
+  const max2 = MAX_STEP*MAX_STEP;
+  for (let i=0;i<gNodes.length;i++){
+    const n=gNodes[i];
+    if (n.type==="sun"){ n.x=0; n.y=0; n.z=0; n.vx=n.vy=n.vz=0; continue; }  // anchored center
+    n.vx-=n.x*0.004*a; n.vy-=n.y*0.004*a; if(g3d) n.vz-=n.z*0.004*a;
+    if (n===gDrag) { n.vx=0; n.vy=0; n.vz=0; continue; }
+    const vz = g3d ? n.vz : 0;
+    const sp2 = n.vx*n.vx + n.vy*n.vy + vz*vz;
+    if (sp2 > max2){
+      const k = MAX_STEP/Math.sqrt(sp2);
+      n.vx*=k; n.vy*=k; if (g3d) n.vz*=k;
+    }
+    n.x+=n.vx; n.y+=n.vy; n.vx*=0.85; n.vy*=0.85;
+    if (g3d){ n.z+=n.vz; n.vz*=0.85; }
+  }
+}
+
+function gPhysics(a){
+  if (gNodes.length <= PHYSICS_EXACT_MAX) gRepelExact(a);
+  else gRepelGrid(a);
+  gSprings(a);
+  gIntegrate(a);
+  gAlpha*=0.985;
+}
+
 function gTick(){
   const a=gAlpha;
 
@@ -3508,38 +3727,10 @@ function gTick(){
     }
   }
   if (a>0.015){
-    for (let i=0;i<gNodes.length;i++) for (let j=i+1;j<gNodes.length;j++){
-      const p=gNodes[i], q=gNodes[j];
-      let dx=p.x-q.x, dy=p.y-q.y, dz=g3d?(p.z-q.z):0;
-      let d2=dx*dx+dy*dy+dz*dz||0.01, d=Math.sqrt(d2);
-      // galaxy: cores push each other MUCH harder -> clusters separate, dark space between
-      const coreRep = ((gView.kind==="galaxy"||gView.kind==="projects") && p.core && q.core) ? 60 : 1;
-      const f=900*a*coreRep/d2;
-      dx/=d; dy/=d; dz/=d;
-      p.vx+=dx*f; p.vy+=dy*f; q.vx-=dx*f; q.vy-=dy*f;
-      if (g3d){ p.vz+=dz*f; q.vz-=dz*f; }
-    }
-    gEdges.forEach(e=>{
-      const trail = e.w<0;               // inter-project "trail" — visual only, negligible pull
-      const proj=(e.a.type==="proj"||e.b.type==="proj");
-      const galaxyish=(gView.kind==="galaxy"||gView.kind==="projects");
-      const rest = proj ? (galaxyish?520:70)
-                 : (e.a.type==="dept"||e.b.type==="dept") ? 85 : 55;
-      let dx=e.b.x-e.a.x, dy=e.b.y-e.a.y, dz=g3d?(e.b.z-e.a.z):0;
-      let d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.01;
-      const f=(d-rest)*(trail?0.002:0.045)*a;   // trails barely tug -> don't collapse the spacing
-      dx/=d; dy/=d; dz/=d;
-      e.a.vx+=dx*f; e.a.vy+=dy*f; e.b.vx-=dx*f; e.b.vy-=dy*f;
-      if (g3d){ e.a.vz+=dz*f; e.b.vz-=dz*f; }
-    });
-    gNodes.forEach(n=>{
-      if (n.type==="sun"){ n.x=0; n.y=0; n.z=0; n.vx=n.vy=n.vz=0; return; }  // anchored center
-      n.vx-=n.x*0.004*a; n.vy-=n.y*0.004*a; if(g3d) n.vz-=n.z*0.004*a;
-      if (n===gDrag) { n.vx=0; n.vy=0; n.vz=0; return; }
-      n.x+=n.vx; n.y+=n.vy; n.vx*=0.85; n.vy*=0.85;
-      if (g3d){ n.z+=n.vz; n.vz*=0.85; }
-    });
-    gAlpha*=0.985;
+    gPhysics(a);
+    // The cloud grows while it settles, so fit at the END of settling rather than the
+    // start — once, and only while the view is still the app's to choose.
+    if (gAlpha<=0.015 && !gUserAdjusted) gFitView();
   }
   if (g3d && gAutoRot) gYaw+=cfg("driftSpeed");   // gentle drift (settings)
   gDraw();
@@ -3556,6 +3747,76 @@ function project(n, W, H){
   const persp=gCamZ/(gCamZ+z2+300);
   return { sx:W/2+gOX + x1*persp*gScale, sy:H/2+gOY + y1*persp*gScale, scale:persp*gScale, depth:z2 };
 }
+/* ── dense rendering ─────────────────────────────────────────────────────────
+   Past a few thousand nodes the ordinary renderer stops being viable, and not because
+   of the pixels: it is the CALLS. Every node costs a globalAlpha, a beginPath, an arc,
+   a fillStyle and a fill — twice, because the bright core is a second circle — and
+   every edge costs its own stroke with its own dash and width. Measured at 100,000
+   nodes that came to 625ms a frame while the physics needed 47ms.
+
+   So above the threshold the parts stop being shapes and become PIXELS: their screen
+   positions are written straight into an image buffer and blitted once, the way a
+   falling-sand game paints its world. Brightness accumulates where stars overlap,
+   which is what makes a dense cluster read as a glowing core rather than a grey blob.
+
+   The hubs — the sun, departments, sections, project cores — stay real drawn circles
+   with labels on top, because there are only ever a handful and they are the structure
+   you actually read. Part-to-part hairlines are dropped at this scale; at 100,000
+   nodes they are visual noise, and the clustering is legible from the stars alone. */
+
+const DRAW_DENSE_MIN = 4000;   // node count at which parts become pixels
+let denseImg = null, denseArr = null, denseW = 0, denseH = 0;
+
+/* packRGB builds the little-endian ABGR word an ImageData buffer expects. */
+function packRGB(hex){
+  hex = hex.replace("#","");
+  if (hex.length===3) hex = hex.split("").map(c=>c+c).join("");
+  const r=parseInt(hex.slice(0,2),16), g=parseInt(hex.slice(2,4),16), b=parseInt(hex.slice(4,6),16);
+  return {r,g,b};
+}
+
+function gDrawDense(x, W, H, dpr, C){
+  const pw = Math.max(1, W*dpr|0), ph = Math.max(1, H*dpr|0);
+  if (!denseImg || denseW!==pw || denseH!==ph){
+    denseImg = x.createImageData(pw, ph);
+    denseArr = new Uint32Array(denseImg.data.buffer);
+    denseW = pw; denseH = ph;
+  }
+  denseArr.fill(0);   // fully transparent: the pane's own background shows through
+
+  const part = packRGB(C.fg), low = packRGB(C.amber);
+  // Accumulate into the RGB channels so overlapping stars brighten rather than
+  // overwrite. Alpha is pinned opaque wherever anything landed.
+  const plot = (px, py, col) => {
+    if (px<0 || py<0 || px>=denseW || py>=denseH) return;
+    const i = py*denseW + px;
+    const cur = denseArr[i];
+    if (!cur){ denseArr[i] = 0xff000000 | (col.b<<16) | (col.g<<8) | col.r; return; }
+    const r = Math.min(255, (cur & 255) + (col.r>>1));
+    const g = Math.min(255, ((cur>>8) & 255) + (col.g>>1));
+    const b = Math.min(255, ((cur>>16) & 255) + (col.b>>1));
+    denseArr[i] = 0xff000000 | (b<<16) | (g<<8) | r;
+  };
+
+  let drawn = 0;
+  for (let i=0;i<gNodes.length;i++){
+    const n = gNodes[i];
+    if (isHub(n) || n.type==="shared") continue;   // hubs are drawn properly below
+    let sx, sy, sc;
+    if (g3d){ const p = project(n, W, H); sx=p.sx; sy=p.sy; sc=p.scale; }
+    else { sx = W/2+gOX + n.x*gScale; sy = H/2+gOY + n.y*gScale; sc = gScale; }
+    const px = (sx*dpr)|0, py = (sy*dpr)|0;
+    if (px<0 || py<0 || px>=denseW || py>=denseH) continue;
+    const col = n.low ? low : part;
+    plot(px, py, col);
+    // a second pixel once zoomed in, so stars do not vanish when the view is close
+    if (sc > 0.9){ plot(px+1, py, col); plot(px, py+1, col); plot(px+1, py+1, col); }
+    drawn++;
+  }
+  x.putImageData(denseImg, 0, 0);
+  return drawn;
+}
+
 function gDraw(){
   const {cv,W,H,dpr}=gDims();
   if (!W||!H) return;
@@ -3574,10 +3835,15 @@ function gDraw(){
   if (g3d){ gDraw3D(x, W, H, hoverSet); drawSweep(x,W,H); return; }
 
   const C=themeCol();
+  const dense = gNodes.length > DRAW_DENSE_MIN;
+  // parts as pixels first, then the structure on top of them.
+  // putImageData works in device pixels and ignores the current transform, which is
+  // why this needs no save/restore around it.
+  if (dense) gDrawDense(x, W, H, dpr, C);
   x.save();
   x.translate(W/2+gOX, H/2+gOY); x.scale(gScale,gScale);
   // edges
-  gEdges.forEach(e=>{
+  if (!dense) gEdges.forEach(e=>{
     const trail = e.w<0;
     const hot = hoverSet && hoverSet.has(e.a.id) && hoverSet.has(e.b.id) && (e.a===gHover||e.b===gHover);
     x.globalAlpha = hoverSet ? (hot?0.9:0.05) : (trail?0.14:0.28);
@@ -3586,8 +3852,20 @@ function gDraw(){
     if (trail) x.setLineDash([6/gScale,6/gScale]); else x.setLineDash([]);
     x.beginPath(); x.moveTo(e.a.x,e.a.y); x.lineTo(e.b.x,e.b.y); x.stroke();
   });
+  else {
+    // at this scale only the skeleton is worth drawing: hub to hub, not every part
+    x.globalAlpha=0.35; x.strokeStyle=C.dim; x.lineWidth=1/gScale;
+    x.beginPath();
+    for (let i=0;i<gEdges.length;i++){
+      const e=gEdges[i];
+      if (!isHub(e.a) || !isHub(e.b)) continue;
+      x.moveTo(e.a.x,e.a.y); x.lineTo(e.b.x,e.b.y);
+    }
+    x.stroke();
+  }
   x.setLineDash([]);
   gNodes.forEach(n=>{
+    if (dense && !isHub(n) && n.type!=="shared") return;   // already a pixel
     const dim = hoverSet && !hoverSet.has(n.id);
     x.globalAlpha = dim?0.12:1;
     const r=nodeR(n);
@@ -3634,7 +3912,25 @@ function drawSweep(x,W,H){
   x.globalAlpha=1; x.restore();
 }
 /* 3D renderer: depth-sorted, perspective, holographic glow */
+/* gDraw3D draws the parts as pixels when there are too many to draw as shapes, then
+   hands the hubs to the full renderer below. Filtering the node and edge lists for the
+   duration is deliberate: the hub rendering — fog, depth sorting, gradients, labels,
+   the holo styling — is worth keeping exactly as it is, and it is affordable on a
+   hundred nodes. Only the part layer needs the cheap path. */
 function gDraw3D(x, W, H, hoverSet){
+  if (gNodes.length <= DRAW_DENSE_MIN) return gDraw3DShapes(x, W, H, hoverSet);
+
+  gDrawDense(x, W, H, gDims().dpr, themeCol());
+
+  const allNodes = gNodes, allEdges = gEdges;
+  const keep = n => isHub(n) || n.type==="shared";
+  gNodes = allNodes.filter(keep);
+  gEdges = allEdges.filter(e => keep(e.a) && keep(e.b));
+  try { gDraw3DShapes(x, W, H, hoverSet); }
+  finally { gNodes = allNodes; gEdges = allEdges; }
+}
+
+function gDraw3DShapes(x, W, H, hoverSet){
   const holo = gStyle==="holo";
   const C=themeCol();
   const P=new Map(); gNodes.forEach(n=>P.set(n, project(n,W,H)));
@@ -3738,7 +4034,11 @@ function setGraph(m){
   document.body.classList.toggle("g-split", m==="split");
   document.body.classList.toggle("g-full", m==="full");
   if (m==="off" && !gPopped()){ updateHud(); return; }   // gTick stops itself
-  gScale=cfg("launchZoom"); gOX=0; gOY=0;   // open at the configured zoom
+  gUserAdjusted=false;
+  gOX=0; gOY=0;
+  gScale=cfg("launchZoom");                 // open at the configured zoom…
+  buildGraphData();                          // …then frame whatever is actually there
+  gScale=gFitScale();
   buildGraphData(); updateGLabel(); updateHud();
   sweepT = performance.now();     // kick off the radar sweep on open
   if (!gRAF) gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
@@ -3792,8 +4092,45 @@ function galaxyGrow(){
   };
   step();
 }
+/* How far out the cloud actually reaches. Uses the 98th percentile rather than the
+   maximum so a single node flung out by the simulation does not zoom the whole view
+   into the distance. */
+function gContentRadius(){
+  if (!gNodes.length) return 0;
+  const rs = new Float64Array(gNodes.length);
+  for (let i=0;i<gNodes.length;i++){
+    const n=gNodes[i];
+    rs[i] = Math.hypot(n.x, n.y, g3d ? (n.z||0) : 0);
+  }
+  rs.sort();
+  return rs[Math.min(rs.length-1, Math.floor(rs.length*0.98))] || 0;
+}
+
+/* The zoom that fits the cloud on screen — but never CLOSER than the configured launch
+   zoom. A small shop's graph is unchanged (its cloud already fits, so the launch zoom
+   wins); a large one zooms out until you can see it instead of sitting inside it.
+
+   This is what a graph that grows needs: the layout spreads with the node count, and a
+   fixed zoom quietly leaves everything off screen. */
+function gFitScale(){
+  const launch = cfg("launchZoom");
+  const r = gContentRadius();
+  if (!r) return launch;
+  const {W,H} = gDims();
+  const fit = (Math.min(W,H) * 0.45) / r;
+  return Math.max(0.02, Math.min(launch, fit));
+}
+
+function gFitView(){
+  gScale = gFitScale(); gOX = 0; gOY = 0;
+}
+
+// Set as soon as the person zooms or pans, so the auto-fit stops overriding them.
+let gUserAdjusted = false;
+
 function graphHome(){          // recenter camera / view — the auto-home
-  gScale=cfg("launchZoom"); gOX=0; gOY=0;
+  gUserAdjusted = false;
+  gFitView();
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
   gAlpha=Math.max(gAlpha,0.6);
 }
@@ -3822,6 +4159,7 @@ function bindGraphPointer(cv, win){
     if (Math.abs(dx)+Math.abs(dy)>3) gMoved=true;
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
     else if (gPanning){
+      gUserAdjusted=true;
       if (g3d){ gAutoRot=false; gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
       else { gOX+=dx; gOY+=dy; }
     }
@@ -3841,8 +4179,9 @@ function bindGraphPointer(cv, win){
   });
   cv.addEventListener("wheel", e=>{
     e.preventDefault();
+    gUserAdjusted=true;                       // stop auto-fitting over their choice
     const f=e.deltaY<0?1.12:0.89;
-    gScale=Math.min(6,Math.max(0.25,gScale*f));
+    gScale=Math.min(6,Math.max(0.02,gScale*f));
   }, {passive:false});
   cv.addEventListener("touchstart", e=>{
     const t=e.touches[0], r=cv.getBoundingClientRect();
