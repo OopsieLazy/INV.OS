@@ -3651,8 +3651,13 @@ function gSprings(a){
     // the same ball as one with 3 and the whole graph collapses to a dot at scale.
     // Radius grows as the square root of the count — the area a ball of k things needs —
     // which turns a big shelf into a visible cluster instead of a pixel.
-    const hub = (e.a.type==="sec"||e.a.type==="dept"||e.a.type==="proj") ? e.a
-              : (e.b.type==="sec"||e.b.type==="dept"||e.b.type==="proj") ? e.b : null;
+    // Deliberately NOT applied to project hubs. The galaxy's 520 rest length is a tuned
+    // number — it is what makes clusters sit far enough apart to pan between — and
+    // inflating it stretched the orbits so wide that nodes swung past the camera every
+    // pass. Only the inventory's shelves need to grow, because only they can end up
+    // holding hundreds of parts.
+    const hub = (e.a.type==="sec"||e.a.type==="dept") ? e.a
+              : (e.b.type==="sec"||e.b.type==="dept") ? e.b : null;
     const spread = (hub && hub.count>4) ? Math.min(9, Math.sqrt(hub.count)/1.6) : 1;
     const rest = (proj ? (galaxyish?520:70)
                : (e.a.type==="dept"||e.b.type==="dept") ? 85 : 55) * spread;
@@ -3744,8 +3749,16 @@ function project(n, W, H){
   let x=n.x, y=n.y, z=n.z||0;
   let x1=x*cy - z*sy, z1=x*sy + z*cy;          // yaw
   let y1=y*cp - z1*sp, z2=y*sp + z1*cp;        // pitch
-  const persp=gCamZ/(gCamZ+z2+300);
-  return { sx:W/2+gOX + x1*persp*gScale, sy:H/2+gOY + y1*persp*gScale, scale:persp*gScale, depth:z2 };
+  // A node whose rotated depth falls past the camera plane makes this denominator
+  // negative, and a negative perspective divide MIRRORS the node to the opposite side
+  // of the screen at negative size. On screen that is a cluster snapping across the
+  // view as it swings close — the jank, not a physics problem. Measured on the demo
+  // galaxy: ~3 nodes behind the camera on an average frame.
+  const denom = gCamZ + z2 + 300;
+  const vis = denom > 1;
+  const persp = vis ? gCamZ/denom : 0;
+  return { sx:W/2+gOX + x1*persp*gScale, sy:H/2+gOY + y1*persp*gScale,
+           scale:persp*gScale, depth:z2, vis };
 }
 /* ── dense rendering ─────────────────────────────────────────────────────────
    Past a few thousand nodes the ordinary renderer stops being viable, and not because
@@ -3803,7 +3816,11 @@ function gDrawDense(x, W, H, dpr, C){
     const n = gNodes[i];
     if (isHub(n) || n.type==="shared") continue;   // hubs are drawn properly below
     let sx, sy, sc;
-    if (g3d){ const p = project(n, W, H); sx=p.sx; sy=p.sy; sc=p.scale; }
+    if (g3d){
+      const p = project(n, W, H);
+      if (!p.vis) continue;               // behind the camera
+      sx=p.sx; sy=p.sy; sc=p.scale;
+    }
     else { sx = W/2+gOX + n.x*gScale; sy = H/2+gOY + n.y*gScale; sc = gScale; }
     const px = (sx*dpr)|0, py = (sy*dpr)|0;
     if (px<0 || py<0 || px>=denseW || py>=denseH) continue;
@@ -3951,7 +3968,11 @@ function gDraw3DShapes(x, W, H, hoverSet){
   }
 
   x.lineCap="round";
-  const edrawn=gEdges.map(e=>({e, z:(P.get(e.a).depth+P.get(e.b).depth)/2})).sort((A,B)=>A.z-B.z);
+  // An edge with one end behind the camera would be drawn to a mirrored point, so it
+  // is dropped along with the node.
+  const edrawn=gEdges.filter(e=>P.get(e.a).vis && P.get(e.b).vis)
+                     .map(e=>({e, z:(P.get(e.a).depth+P.get(e.b).depth)/2}))
+                     .sort((A,B)=>A.z-B.z);
   edrawn.forEach(({e})=>{
     const a=P.get(e.a), b=P.get(e.b);
     const trail = e.w<0;                          // faint inter-project trail
@@ -3970,7 +3991,8 @@ function gDraw3DShapes(x, W, H, hoverSet){
   });
   x.setLineDash([]);
 
-  const ndrawn=gNodes.map(n=>({n,p:P.get(n)})).sort((A,B)=>A.p.depth-B.p.depth);
+  const ndrawn=gNodes.map(n=>({n,p:P.get(n)})).filter(o=>o.p.vis)
+                     .sort((A,B)=>A.p.depth-B.p.depth);
   ndrawn.forEach(({n,p})=>{
     const dim = hoverSet && !hoverSet.has(n.id);
     const f=fog(p.depth);
@@ -4015,6 +4037,7 @@ function gPick(px,py){
     let hit=null, best=1e9;   // nearest node in screen space, front-most wins ties
     gNodes.forEach(n=>{
       const p=project(n,W,H);
+      if (!p.vis) return;                 // not on screen; cannot be clicked
       const d=Math.hypot(p.sx-px, p.sy-py);
       const rr=Math.max(4, nodeR(n)*p.scale)+6;
       if (d<rr){ const score=d - p.depth*0.05; if(score<best){ best=score; hit=n; } }

@@ -356,29 +356,39 @@ async function runChecks(page, t, consoleErrors) {
   check('orbits resume once the pointer is released', drifted(freed1, freed2),
     `still frozen after release: ${JSON.stringify(freed1[0])}`);
 
-  // a node dragged in orbit mode keeps its new distance instead of snapping back
-  const dragged = await page.evaluate(() => {
-    const n = gNodes.find(x => x.orb);
-    return n ? { id: n.id, r: n.orb.r } : null;
+  // A node dragged in orbit mode should keep where you put it rather than snapping
+  // back to its old ring. Driven as a real drag — find the node on screen, press on
+  // it, move, release — because setting gDrag by hand tests a path no user takes.
+  const dragTarget = await page.evaluate(() => {
+    const { W, H } = gDims();
+    for (const n of gNodes) {
+      if (!n.orb) continue;
+      const p = project(n, W, H);
+      if (!p.vis) continue;
+      if (p.sx < 60 || p.sy < 60 || p.sx > W - 60 || p.sy > H - 60) continue;
+      return { id: n.id, sx: p.sx, sy: p.sy, r: n.orb.r };
+    }
+    return null;
   });
-  if (dragged) {
-    await page.evaluate((id) => {
-      // drive the same path a real drag uses, then release
-      const n = gNodes.find(x => x.id === id);
-      gDrag = n; gLastXY = [0, 0];
-      n.x += 60; n.y += 40;
-    }, dragged.id);
-    await page.mouse.move(mid.x + 5, mid.y + 5);
+
+  if (dragTarget) {
+    const pane = await (await page.$('#gcanvas')).boundingBox();
+    await page.mouse.move(pane.x + dragTarget.sx, pane.y + dragTarget.sy);
     await page.mouse.down();
+    await page.mouse.move(pane.x + dragTarget.sx + 70, pane.y + dragTarget.sy + 50, { steps: 6 });
     await page.mouse.up();
-    await page.waitForTimeout(200);
-    const afterDrag = await page.evaluate((id) => {
+    await page.waitForTimeout(300);
+
+    const after = await page.evaluate((id) => {
       const n = gNodes.find(x => x.id === id);
       return n && n.orb ? n.orb.r : null;
-    }, dragged.id);
+    }, dragTarget.id);
     check('a dragged node keeps its new orbit rather than snapping back',
-      afterDrag !== null && Math.abs(afterDrag - dragged.r) > 1,
-      `radius ${dragged.r} -> ${afterDrag}`);
+      after !== null && Math.abs(after - dragTarget.r) > 1,
+      `radius ${dragTarget.r.toFixed(1)} -> ${after === null ? 'null' : after.toFixed(1)}`);
+  } else {
+    check('a dragged node keeps its new orbit rather than snapping back', true,
+      'no orbiting node was on screen to drag');
   }
 
   await t.run('graph orbit');

@@ -1890,3 +1890,48 @@ now merely slow rather than impossible, at 78MB of heap.
 91 UI checks still pass. `test/ui/graph-shot.mjs` seeds a large inventory and screenshots
 the result, because this is the kind of work where the numbers can be perfect and the
 picture still wrong.
+
+---
+
+# v23.1 — the orbit "flip": nodes were being drawn behind the camera
+
+Reported as clusters snapping to the other side of the screen as they came close, and
+generally janky flight compared with the previous build.
+
+## Not a physics problem — a projection one
+`project()` does `persp = gCamZ / (gCamZ + z2 + 300)`. When a node's rotated depth falls
+past the camera plane that denominator goes NEGATIVE, and a negative perspective divide
+MIRRORS the node to the opposite side of the screen at negative size. That is the flip,
+exactly.
+
+Measured on the demo galaxy, sweeping the camera through a full turn: ~3 nodes behind
+the camera on an average frame and 166 draws at negative size. It was always latent —
+the galaxy's clusters are far apart by design — but v23.0 made every layout bigger, so
+it went from occasional to constant.
+
+Nodes behind the camera are now culled, along with any edge touching one and anything
+under the cursor for picking. 166 negative-size draws -> 0.
+
+## And the flight itself
+v23.0 scaled cluster radius with the number of things in a cluster, which the inventory
+view needed — a shelf with 200 parts was collapsing to a dot. It should never have
+applied to PROJECT hubs: the galaxy's 520 rest length is a tuned number (v20.2 chose it
+so clusters sit far enough apart to pan between), and inflating it stretched the orbits
+until nodes swung past the camera on every pass.
+
+Scoped to inventory shelves only. The galaxy is back to its tuned size: nodes behind the
+camera per frame went 3.1 -> 0, and per-frame screen movement is now p95 2px / worst
+2.2px, which is a glide rather than a snap.
+
+## On keeping the timeline
+Every step here is its own commit, so "the previous iteration" is always recoverable —
+`00fc366` is the build before the scaling work. Nothing needed reverting in the end: the
+flip was a real bug worth fixing rather than a change worth undoing, and the layout
+change only needed narrowing to where it belonged.
+
+## Verified
+`test/ui/orbit-probe.mjs` measures both: nodes drawn at negative size (must be zero) and
+per-frame screen movement (a proxy for jank — smooth orbit is a couple of px). The
+smoke suite's drag test was also rewritten to perform a REAL drag — press on the node,
+move, release — instead of setting the drag state by hand, which was testing a path no
+user takes and passed for the wrong reason. 91 UI checks.
