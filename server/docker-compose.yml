@@ -1,0 +1,16 @@
+# Containerized INV.OS: one service (app+api+sqlite in the Go binary).
+# Build the binary first (see README), or use the multi-stage Dockerfile.
+services:
+  invos:
+    build: .
+    ports: ["8137:8137"]
+    environment:
+      INVOS_DB: /data/invos.db
+      INVOS_STATIC: /app/deploy
+      # INVOS_TOKEN: change-me      # uncomment to require a shared token
+    volumes:
+      - invos-data:/data            # the SQLite DB persists here — back this up
+      - ./deploy:/app/deploy:ro     # the static app
+    restart: unless-stopped
+volumes:
+  invos-data:

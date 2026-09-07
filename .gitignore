@@ -1,0 +1,17 @@
+# data — never commit inventory
+invos-*.json
+invos-backup.json
+*.db
+*.db-wal
+*.db-shm
+
+# build output
+invos-server
+invos-server-*
+invos.exe
+/bin/
+/dist/
+
+# local noise
+.DS_Store
+Thumbs.db
