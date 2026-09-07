@@ -2951,12 +2951,12 @@ async function exec(line){
         setGraph("split");
       }
       else if (["inv","inventory","all"].includes(ml)){
-        if (graphMode==="off") setGraph("split");
         setGraphView({kind:"inv"});
+        if (graphMode==="off") setGraph("split");
       }
       else if (["projects","proj","projs"].includes(ml)){
-        if (graphMode==="off") setGraph("split");
         setGraphView({kind:"projects"});
+        if (graphMode==="off") setGraph("split");
       }
       else if (["galaxy","universe","clusters"].includes(ml) && !galaxyOn()){
         print("the galaxy view is switched off — showing projects instead.","a");
@@ -3300,6 +3300,14 @@ function updateGLabel(){
   if (gPopped()){ const l=gWin.document.getElementById("l"); if(l) l.innerHTML=html; }
 }
 function buildGraphData(){
+  // Build once, when there is something to build. Laying out an empty graph and then
+  // laying it out again when the parts arrive resets the simulation a second later —
+  // which on screen is the view starting, running for a moment, and starting over.
+  if (gView.kind==="inv" && !graphItemsLoaded){
+    ensureGraphItems();
+    gNodes=[]; gEdges=[];
+    return;
+  }
   const old=new Map(gNodes.map(n=>[n.id,n]));
   const nid=new Map(); const nodes=[]; const eset=new Set(); const edges=[];
   const addN=(id,type,label,extra={})=>{
@@ -3843,7 +3851,9 @@ function gDraw(){
   x.clearRect(0,0,W,H);
   if (!gNodes.length){
     x.fillStyle=themeCol().dim; x.font="12px Consolas,monospace"; x.textAlign="center";
-    x.fillText(gView.kind==="projects" ? "no projects yet — project new <name>" : "nothing here yet — add parts", W/2, H/2);
+    x.fillText(graphItemsLoading ? "reading the inventory…"
+             : gView.kind==="projects" ? "no projects yet — project new <name>"
+             : "nothing here yet — add parts", W/2, H/2);
     return;
   }
   const hoverSet = gHover ? new Set([gHover.id]) : null;
@@ -4059,10 +4069,10 @@ function setGraph(m){
   if (m==="off" && !gPopped()){ updateHud(); return; }   // gTick stops itself
   gUserAdjusted=false;
   gOX=0; gOY=0;
-  gScale=cfg("launchZoom");                 // open at the configured zoom…
-  buildGraphData();                          // …then frame whatever is actually there
+  gScale=cfg("launchZoom");     // the configured zoom, unless the content needs wider
+  buildGraphData();             // build ONCE, then frame whatever is actually there
   gScale=gFitScale();
-  buildGraphData(); updateGLabel(); updateHud();
+  updateGLabel(); updateHud();
   sweepT = performance.now();     // kick off the radar sweep on open
   if (!gRAF) gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
 }
@@ -4073,9 +4083,15 @@ function setGraphView(v){
   const changed = !gView || gView.kind!==v.kind || gView.pid!==v.pid;
   gView=v;
   if (changed) gOrbitInit=false;   // radii are captured from the settled layout
-  if (graphMode!=="off"){ buildGraphData(); updateGLabel();
-    if (changed){ const nm = v.kind==="inv"?"INVENTORY":v.kind==="projects"?"PROJECTS":v.kind==="galaxy"?"GALAXY":
-      (state.projects.find(x=>x.pid===v.pid)?.name||"PROJECT"); toast(nm); } }
+  if (graphMode!=="off"){ buildGraphData(); updateGLabel(); }
+  // The toast is outside that check on purpose: the view can now be chosen BEFORE the
+  // pane is opened (so the pane builds once, in the right view), and the switch should
+  // still announce itself.
+  if (changed){
+    const nm = v.kind==="inv"?"INVENTORY":v.kind==="projects"?"PROJECTS":v.kind==="galaxy"?"GALAXY":
+      (state.projects.find(x=>x.pid===v.pid)?.name||"PROJECT");
+    toast(nm);
+  }
 }
 let _toastT=null;
 function toast(msg){
@@ -5113,6 +5129,9 @@ load().then(async ()=>{
   await loadProjects();
   await refreshPhotoIds();
   await refreshServerInfo();
+  // Warm the graph's sample now rather than when the pane opens, so switching to it
+  // does not have to wait — and so it never has to build twice.
+  ensureGraphItems();
   if (state.firstRun && !state.shopName){
     updateBadge(); firstRun(); cmd.focus();
   } else { updateBadge(); home(); cmd.focus(); }

@@ -1935,3 +1935,45 @@ per-frame screen movement (a proxy for jank — smooth orbit is a couple of px).
 smoke suite's drag test was also rewritten to perform a REAL drag — press on the node,
 move, release — instead of setting the drag state by hand, which was testing a path no
 user takes and passed for the wrong reason. 91 UI checks.
+
+---
+
+# v23.2 — the view was laying itself out four times
+
+Reported as: switching to a view starts, runs a few frames, restarts, then runs fine.
+
+`buildGraphData()` ends with `gAlpha = 0.9` — a full re-heat of the simulation. So every
+extra call is a visible restart. Counting them on the first `graph inv` found **four**:
+
+1. `setGraphView` built the graph
+2. `setGraph` built it again when opening the pane
+3. `setGraph` built it a THIRD time — the auto-fit patch in v23.0 added a build and left
+   the original call sitting right below it
+4. the graph's item fetch landed and rebuilt with the real data
+
+Now one:
+- `setGraph` builds once, then fits the camera to what it built
+- the view is chosen BEFORE the pane opens, so the pane builds the right view instead of
+  building the old one and rebuilding for the new one
+- `buildGraphData` refuses to lay out an empty inventory graph at all: if the parts have
+  not arrived it starts the fetch and returns, so there is exactly one layout, when there
+  is something to lay out. The pane says "reading the inventory…" in the meantime
+- the fetch is warmed at boot, so opening the graph is usually instant anyway
+
+## The measurement was wrong before it was right
+The first probe watched `gAlpha` for re-heats and reported a clean 1 — because over
+loopback the second build lands within milliseconds, before the polling loop even starts.
+It was measuring after the event it was looking for. Counting `buildGraphData` calls
+instead cannot be raced, and immediately showed 4.
+
+Worth remembering: a probe that reports "fixed" proves nothing until it has been shown to
+report "broken" on the broken code. This one was checked against the old build first.
+
+## Also fixed a test that was passing by luck
+The orbit drag check computed a node's screen position, then pressed there — by which
+time the node had orbited away, so the press landed on empty space and the test only
+passed when it happened to hit. It now presses FIRST (which freezes the motion, as it
+should) and then asks what is under the cursor, trying a few points if the first misses.
+
+91 UI checks. Orbit smoothness after all of this: p95 1.1px of screen movement a frame,
+worst 1.7px, zero nodes drawn behind the camera.

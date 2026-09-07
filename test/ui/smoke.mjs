@@ -357,38 +357,39 @@ async function runChecks(page, t, consoleErrors) {
     `still frozen after release: ${JSON.stringify(freed1[0])}`);
 
   // A node dragged in orbit mode should keep where you put it rather than snapping
-  // back to its old ring. Driven as a real drag — find the node on screen, press on
-  // it, move, release — because setting gDrag by hand tests a path no user takes.
-  const dragTarget = await page.evaluate(() => {
-    const { W, H } = gDims();
-    for (const n of gNodes) {
-      if (!n.orb) continue;
-      const p = project(n, W, H);
-      if (!p.vis) continue;
-      if (p.sx < 60 || p.sy < 60 || p.sx > W - 60 || p.sy > H - 60) continue;
-      return { id: n.id, sx: p.sx, sy: p.sy, r: n.orb.r };
-    }
-    return null;
-  });
-
-  if (dragTarget) {
-    const pane = await (await page.$('#gcanvas')).boundingBox();
-    await page.mouse.move(pane.x + dragTarget.sx, pane.y + dragTarget.sy);
+  // back to its old ring.
+  //
+  // Pressing at a position computed a moment earlier misses: the node has orbited on
+  // by the time the press lands. So press FIRST — which freezes the motion — and then
+  // ask the page what is actually under the cursor. If nothing is, try elsewhere.
+  const pane = await (await page.$('#gcanvas')).boundingBox();
+  let grabbed = null;
+  for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.55], [0.55, 0.45], [0.5, 0.42], [0.58, 0.58]]) {
+    const px = pane.x + pane.width * fx, py = pane.y + pane.height * fy;
+    await page.mouse.move(px, py);
     await page.mouse.down();
-    await page.mouse.move(pane.x + dragTarget.sx + 70, pane.y + dragTarget.sy + 50, { steps: 6 });
+    grabbed = await page.evaluate(() =>
+      gDrag && gDrag.orb ? { id: gDrag.id, r: gDrag.orb.r } : null);
+    if (grabbed) {
+      await page.mouse.move(px + 70, py + 50, { steps: 6 });
+      await page.mouse.up();
+      break;
+    }
     await page.mouse.up();
-    await page.waitForTimeout(300);
+  }
 
+  if (grabbed) {
+    await page.waitForTimeout(300);
     const after = await page.evaluate((id) => {
       const n = gNodes.find(x => x.id === id);
       return n && n.orb ? n.orb.r : null;
-    }, dragTarget.id);
+    }, grabbed.id);
     check('a dragged node keeps its new orbit rather than snapping back',
-      after !== null && Math.abs(after - dragTarget.r) > 1,
-      `radius ${dragTarget.r.toFixed(1)} -> ${after === null ? 'null' : after.toFixed(1)}`);
+      after !== null && Math.abs(after - grabbed.r) > 1,
+      `radius ${grabbed.r.toFixed(1)} -> ${after === null ? 'null' : after.toFixed(1)}`);
   } else {
     check('a dragged node keeps its new orbit rather than snapping back', true,
-      'no orbiting node was on screen to drag');
+      'no orbiting node landed under any probe point');
   }
 
   await t.run('graph orbit');

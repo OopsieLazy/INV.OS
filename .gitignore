@@ -26,3 +26,5 @@ test/ui/*.png
 invos-bench.exe
 invos-shot.exe
 invos-upd.exe
+invos-restart.exe
+invos-orbit.exe
