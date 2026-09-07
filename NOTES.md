@@ -1644,3 +1644,46 @@ perfectly well.
 Now checked by node COUNTS: one part node per item in the database, departments and
 shelves present, the galaxy's project cores and their parts, and a newly added item
 appearing without a reload. 81 UI checks.
+
+---
+
+# v22.4 — the service worker was serving a stale UI (why the graph fix "didn't work")
+
+## What was actually happening
+The sections graph fix in v22.3 was correct and tested, but reloading the app still
+showed only the sun. The fix was never reaching the browser.
+
+`sw.js` cached the app shell CACHE-FIRST under a version name (`invos-v4`) that only
+changed when someone remembered to change it. It had not changed since v21.2. So any
+profile that had opened the app once kept serving the index.html it cached back then —
+every UI fix since was invisible. New browser profiles saw the fixes, which is exactly
+why the automated tests passed while the real window stayed broken.
+
+This would have shipped. A customer on an old cached UI would report bugs that were
+fixed months earlier, and no amount of reloading would help them.
+
+## The fix: no service worker in this build
+The old static app needed one — it was a page hosted elsewhere and the cache is what
+made it work offline. The exe is not that. The UI is served over loopback by the process
+that owns the database; if that process is not running there is no app to cache FOR.
+A cached shell with no server behind it is a dead screen, not offline support.
+
+- `sw.js` is now a worker whose only job is to delete its caches, unregister itself, and
+  reload open windows. Its content changed, which is what makes browsers pick it up.
+- `index.html` no longer registers a worker; it tears down whatever is there.
+- Go serves the UI with `Cache-Control: no-cache, no-store, must-revalidate`. Re-reading
+  200KB from a local socket is not a cost worth trading a wrong screen for.
+- `install` now explains that the exe already IS the app on this machine, and that a
+  phone should open the shop address and use Add to Home Screen. It no longer points at
+  a browser install that cannot happen without a worker.
+
+## Two new tests, because a fresh browser context can never catch this
+- `test/ui/staleness.mjs` — builds, opens the app in a PERSISTENT profile, changes the
+  UI, rebuilds, reloads, and requires the change to arrive.
+- `test/ui/sw-recovery.mjs` — installs the OLD cache-first worker first, so the profile
+  is in the exact state a real user is in, then ships the fix and requires the profile
+  to recover on its own. Verified: it does, and the old caches and registration are gone.
+
+Lesson worth keeping: smoke.mjs uses a fresh browser context every run, which has no
+cache and therefore cannot see a caching bug. Testing the happy path from a clean state
+proved nothing about the state users are actually in.

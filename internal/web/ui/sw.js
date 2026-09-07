@@ -1,40 +1,32 @@
-/* INV.OS service worker.
+/* INV.OS service worker — self-retiring.
  *
- * The shell (HTML, icons, lazily-loaded libraries) is cached so the station starts
- * instantly and survives a flaky network. The DATA is not: this build reads and
- * writes a real database over /api/, and a cache-first strategy there would hand
- * back a stale inventory forever — a bin that says 40 when the drawer holds 4.
+ * The old static build needed this: it was a page hosted somewhere else, and the cache
+ * was what made it work offline. The exe is different. The app is served by the same
+ * process that owns the database, over loopback. If that process is not running there
+ * is no app to cache FOR — a cached shell with no server behind it is a dead screen.
  *
- * So: /api/ is network-only, everything else is cache-first.
+ * Worse, it actively broke things. The cache was keyed to a version name that only
+ * changed when someone remembered to change it, so every UI fix after the last bump was
+ * invisible to anyone who had already opened the app once. That is how the sections
+ * graph appeared to stay broken after it was fixed.
+ *
+ * So this worker now exists only to remove itself and everything it cached. Once it has
+ * run, the page stops registering a worker at all (see index.html).
  */
-const CACHE = "invos-v4";
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png",
-  "./icon-512.png", "./xlsx.full.min.js", "./sql-wasm.js", "./sql-wasm.wasm"];
+self.addEventListener("install", () => self.skipWaiting());
 
-self.addEventListener("install", e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+self.addEventListener("activate", event => {
+  event.waitUntil((async () => {
+    for (const key of await caches.keys()) {
+      await caches.delete(key);
+    }
+    await self.registration.unregister();
+    // Reload whatever is open so it picks up the real, current UI immediately
+    // instead of the copy this worker was still serving.
+    for (const client of await self.clients.matchAll({ type: "window" })) {
+      client.navigate(client.url).catch(() => {});
+    }
+  })());
 });
 
-self.addEventListener("activate", e => {
-  e.waitUntil(caches.keys()
-    .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
-    .then(() => self.clients.claim()));
-});
-
-self.addEventListener("fetch", e => {
-  const url = new URL(e.request.url);
-
-  // Never cache the API. Let it go straight to the network, and let a failure be a
-  // failure — the app shows "cannot reach the server" rather than inventing data.
-  if (url.pathname.startsWith("/api/")) return;
-
-  if (e.request.method !== "GET") return;
-
-  e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
-      const copy = res.clone();
-      caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
-      return res;
-    }).catch(() => caches.match("./index.html")))
-  );
-});
+// Never intercept a request again — everything goes to the local server.

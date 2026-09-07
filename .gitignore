@@ -19,3 +19,6 @@ Thumbs.db
 # node deps for the UI tests
 test/ui/node_modules/
 invos-test.exe
+invos.exe~
+invos-stale.exe
+invos-recover.exe

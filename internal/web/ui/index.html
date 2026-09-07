@@ -2706,9 +2706,17 @@ async function exec(line){
         updateBadge(); return;
       }
       if (matchMedia("(display-mode: standalone)").matches){ print("already running as an installed app.","g"); return; }
-      print(isSecure
-        ? "no install prompt available — use the browser menu: Install app / Add to Home Screen."
-        : "installing needs https. host the folder (GitHub Pages works) and open it there — that also enables camera scanning.","a");
+      // No service worker in this build, so the browser will not offer to "install"
+      // the page — and it does not need to. The exe already opens its own window on
+      // this machine; what a phone or tablet wants is the shop address.
+      out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
+      print("INSTALL","w"); print("");
+      print("  On this machine, INV.OS is already an app — invos.exe opens its own","d");
+      print("  window. Pin that window to the taskbar and it behaves like any program.","d");
+      print("");
+      print("  On a phone or tablet, open the shop address and use the browser's","d");
+      print("  'Add to Home Screen'. Turn shop access on first:","d");
+      print("    lan on","g");
       return;
     }
 
@@ -3972,8 +3980,28 @@ const isSecure = location.protocol==="https:" ||
                  ["localhost","127.0.0.1"].includes(location.hostname);
 addEventListener("beforeinstallprompt", e=>{ e.preventDefault(); installPrompt=e; updateBadge(); });
 addEventListener("appinstalled", ()=>{ installPrompt=null; print("installed — launch it from your apps.","g"); updateBadge(); });
-if (isSecure && "serviceWorker" in navigator)
-  addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+/* No service worker in this build.
+   The app is served over loopback by the process that owns the database, so a cache
+   buys nothing — if that process is not running there is no app to cache for. What it
+   DID buy was stale UI: the cache name only changed when someone remembered to change
+   it, so every fix after the last bump was invisible to anyone who had already opened
+   the app once.
+
+   Anyone who ran an earlier build still has one registered, so instead of registering,
+   this tears down whatever is there. sw.js is now a worker whose only job is to delete
+   its caches and unregister itself. */
+if ("serviceWorker" in navigator){
+  addEventListener("load", async ()=>{
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      if (regs.length){
+        // let the retiring worker run once so it can clear its own caches
+        await navigator.serviceWorker.register("sw.js").catch(()=>{});
+      }
+      for (const key of (await caches.keys().catch(()=>[]))) await caches.delete(key);
+    } catch(e){ /* a browser that refuses this is no worse off */ }
+  });
+}
 
 /* handle persistence (IndexedDB — file handles can't live in localStorage) */
 function idb(mode,fn){

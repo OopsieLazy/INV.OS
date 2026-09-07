@@ -21,5 +21,20 @@ func Handler() http.Handler {
 		// means the binary itself is malformed.
 		panic("embedded ui missing: " + err.Error())
 	}
-	return http.FileServer(http.FS(sub))
+	return noCache(http.FileServer(http.FS(sub)))
+}
+
+// noCache wraps the UI handler so the browser always revalidates against this process.
+//
+// The app is served over loopback by the program that owns the data, so caching the
+// shell saves nothing measurable and costs correctness: a stale index.html means a user
+// running a fixed build still sees the bug. Re-fetching a couple hundred kilobytes from
+// a local socket is not a cost worth trading a wrong screen for.
+func noCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		h.ServeHTTP(w, r)
+	})
 }
