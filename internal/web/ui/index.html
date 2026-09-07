@@ -3445,6 +3445,12 @@ function nodeR(n){
 
    It repaints every frame, so it defaults OFF. */
 let gOrbit = false, gOrbitInit = false;   // gOrbit mirrors cfg("orbit"); see the toggle
+/* Orbits ease in rather than starting at full speed. By the time the layout has settled
+   the nodes are barely moving — measured at 0.04 units a frame — and orbits run at 1.26,
+   so switching straight to full speed is a 31x jump in one frame. The positions are
+   continuous but the VELOCITY is not, which reads as drifting and then bursting into
+   motion. This ramps 0 -> 1 over about a second. */
+let gOrbitRamp = 0;
 
 /* orbitParentMap derives the hierarchy from the edges that are already there:
    parts hang off their project, projects hang off the sun. Trail edges (w<0, the
@@ -3500,6 +3506,7 @@ function initOrbits(){
     const speed = (0.15 + 0.5/Math.sqrt(r)) * (seed%2 ? 1 : -1) * 0.02;
     n.orb = { parent:par.id, r, ang:0, speed, ux, uy, uz, vx, vy, vz };
   });
+  gOrbitRamp = 0;          // ease in from a standstill
   gOrbitInit = true;
 }
 
@@ -3761,7 +3768,11 @@ function gTick(){
       // node stays under the cursor and the scene does not slide out from under a
       // rotate. Motion resumes the moment the pointer is released.
       const held = !!gLastXY;
-      if (!held) stepOrbits(1);
+      if (!held){
+        gOrbitRamp = Math.min(1, gOrbitRamp + 1/75);        // ~1.25s at 60fps
+        const t = gOrbitRamp;
+        stepOrbits(t*t*(3-2*t));                            // smoothstep: gentle at both ends
+      }
       gAlpha = 0.001;
       if (g3d && gAutoRot && !held) gYaw += cfg("driftSpeed");
       gDraw();

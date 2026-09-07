@@ -105,6 +105,22 @@ console.log(`\nper-frame movement: median ${median.toFixed(2)}`);
 const spikes = steps.map((v, i) => [i + 1, v]).filter(([, v]) => v !== null && v > Math.max(1, median * 8));
 console.log('spikes (frame, movement):', spikes.length ? spikes.slice(0, 8).map(([f, v]) => `f${f}=${v.toFixed(1)}`).join(', ') : 'none');
 
+// 1b. the speed PROFILE around the handoff — position can be continuous while the
+// velocity jumps, which reads as "drifts, then suddenly bursts into orbit"
+const initFrame = (events.find(e => e[1] === 'initOrbits') || [])[0];
+if (initFrame) {
+  const around = [];
+  for (let f = Math.max(1, initFrame - 3); f < Math.min(steps.length, initFrame + 24); f++) {
+    around.push(`f${f}:${steps[f - 1] === null ? '-' : steps[f - 1].toFixed(2)}`);
+  }
+  console.log('\nspeed around the orbit handoff:');
+  console.log('  ' + around.join(' '));
+  const before = steps[initFrame - 2] ?? 0;
+  const justAfter = steps[initFrame] ?? 0;
+  console.log(`  before ${before.toFixed(2)} -> just after ${justAfter.toFixed(2)}` +
+    (justAfter > Math.max(0.5, before * 4) ? '   <-- velocity jump (a burst)' : '   (eased)'));
+}
+
 // 2. rewinds — a frame closer to an OLDER frame than to its predecessor
 const rewinds = [];
 for (let f = 6; f < frames.length; f++) {

@@ -2030,3 +2030,31 @@ assert before writing are the right shape — but "it printed an error" has to b
 
 92 UI checks, including a new one that fails if any node moves more than 40 units in a
 single frame when orbit mode engages.
+
+---
+
+# v23.4 — orbits ease in instead of bursting
+
+Reported straight after the teleport fix: it starts slow, then bursts into orbit. Not
+intentional — v23.3 made the POSITION continuous at the handoff but left the VELOCITY
+discontinuous.
+
+Measured at the handoff frame:
+
+    f161:0.04 f162:0.04 f163:0.04 | f164:1.26 f165:1.26 f166:1.26 ...
+
+By the time the layout has settled the nodes are creeping along at 0.04 units a frame.
+Orbits run at 1.26. Switching straight to full speed is a 31x jump in a single frame —
+smooth in position, a jolt in motion, which is exactly what a burst looks like.
+
+The orbit step is now scaled by a ramp that goes 0 to 1 over about a second, shaped with
+a smoothstep so it is gentle at both ends. `stepOrbits` already took a `dt`, so this is
+just passing the ramp instead of a constant.
+
+    f164:0.00 f165:0.00 f166:0.01 f167:0.01 f168:0.02 ... f187:0.30 ...
+
+The ramp resets whenever orbits are captured, so entering the view always accelerates
+from a standstill. It does NOT reset when a held pointer is released — the motion was
+already at full speed there, and re-ramping would look like a stall.
+
+92 UI checks.
