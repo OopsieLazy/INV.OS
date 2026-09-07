@@ -444,8 +444,51 @@ const DB = {
   meta(k){ return this.get("/api/meta/"+encodeURIComponent(k)); },
   setMeta(k,value){ return this.put("/api/meta/"+encodeURIComponent(k), {value}); },
 
+  /* projects ------------------------------------------------------------ */
+  projects(){ return this.get("/api/projects"); },
+  bom(pid){ return this.get("/api/projects/"+pid+"/bom"); },
+  addProject(name){ return this.post("/api/projects", {name}); },
+  editProject(pid, patch){ return this.patch("/api/projects/"+pid, patch); },
+  delProject(pid){ return this.del("/api/projects/"+pid); },
+  activate(pid){ return this.post("/api/projects/"+pid+"/active"); },
+  setBom(pid, cid, need){ return this.put(`/api/projects/${pid}/bom/${cid}`, {need}); },
+  delBom(pid, cid){ return this.del(`/api/projects/${pid}/bom/${cid}`); },
+  sharedParts(){ return this.get("/api/shared-parts"); },
+
   viewComplete: true,   // does state.items currently hold every matching row?
 };
+
+/* finishFirstRun records that the shop has been set up. It lives in the database
+   rather than this browser, so the welcome screen does not reappear on the next
+   tablet that opens the app. */
+async function finishFirstRun(){
+  state.firstRun = false;
+  state.seeded = true;
+  try { await DB.setMeta("setup_done","1"); }catch(e){}
+}
+
+/* Projects ARE loaded in full, unlike items. A shop has tens of builds with a
+   handful of part lines each, so the whole set is small and bounded — and holding
+   it lets the graph, galaxy and BOM screens keep working unchanged. Every BOM line
+   arrives with the part's name and live stock already joined on, so nothing here
+   needs to go looking through the item table. */
+async function loadProjects(){
+  try {
+    const list = await DB.projects();
+    const boms = await Promise.all(list.map(p=>DB.bom(p.pid).catch(()=>[])));
+    state.projects = list.map((p,i)=>({
+      pid: p.pid, name: p.name, status: p.status, notes: p.notes,
+      created: p.created, active: p.active,
+      bom: (boms[i]||[]).map(l=>({cid:l.cid, need:l.need, have:l.have, name:l.name, bin:l.bin})),
+    }));
+    const act = state.projects.find(p=>p.active);
+    state.activePid = act ? act.pid : null;
+  } catch(e){
+    print("could not load projects: "+e.message,"a");
+  }
+  return state.projects;
+}
+
 
 /* setView installs a result page as the on-screen window. */
 function setView(rows, total){
@@ -651,7 +694,7 @@ async function load(){
     await refreshSummary();
     lowDepts = await lowDeptSet();
     // A brand new database is empty; offer the first-run doors as before.
-    state.firstRun = summary.items === 0;
+    state.firstRun = (await DB.meta("setup_done")).value !== "1";
     state.seeded = summary.items > 0;
     state.seededDemo = (await DB.meta("demo")).value === "1";
   } catch(e){
@@ -918,7 +961,40 @@ async function loadDemoData(){
     })), "demo");
     await DB.setMeta("demo","1");
   } catch(e){ print("could not load the demo data: "+e.message,"a"); return; }
-  state.seeded=true; state.seededDemo=true; state.firstRun=false;
+  // Rebuild the demo projects in the database. They deliberately SHARE parts, which
+  // is what gives the galaxy view its bridges between clusters.
+  try {
+    const seeded = (await DB.peek({limit:1000, sort:"bin"})).rows;
+    const byName = {};
+    seeded.forEach(c=>{ byName[norm(c.name)] = c.cid; });
+    // Match on a name prefix as well as exactly, so a small wording difference in the
+    // seed cannot silently drop a BOM line and leave the galaxy missing a bridge.
+    const pick = n => {
+      const k = norm(n);
+      if (byName[k] != null) return byName[k];
+      const hit = seeded.find(c => norm(c.name).startsWith(k));
+      return hit ? hit.cid : null;
+    };
+    const plan = [
+      ["Weather Station","building", [["ESP32 DevKit",1],["OLED Display",1],["Resistor 10kΩ",4],["Jumper Wires M-M",20],["Breadboard 830pt",1]]],
+      ["Robot Arm","planning",       [["Arduino Uno R3",1],["Logic Level Converter",2],["HC-SR04 Ultrasonic",1],["Jumper Wires M-M",15],["Breadboard 830pt",1]]],
+      ["Desk Clock","done",          [["ESP32 DevKit",1],["OLED Display",1],["Capacitor 100µF",2],["Resistor 220Ω",3]]],
+      ["Line Follower","planning",   [["Arduino Uno R3",1],["HC-SR04 Ultrasonic",2],["Resistor 220Ω",4],["Jumper Wires M-M",10]]],
+    ];
+    for (const [name,status,lines] of plan){
+      const np = await DB.addProject(name);
+      if (status!=="planning") await DB.editProject(np.pid, {status});
+      for (const [partName, need] of lines){
+        const cid = pick(partName);
+        if (cid!=null) await DB.setBom(np.pid, cid, need);
+      }
+    }
+    const first = (await DB.projects())[0];
+    if (first) await DB.activate(first.pid);
+  } catch(e){ print("demo projects could not be created: "+e.message,"a"); }
+  await loadProjects();
+  await finishFirstRun();
+  state.seededDemo=true;
   deptCache=null; await refreshSummary(); lowDepts=await lowDeptSet();
   // seed demo PROJECTS that deliberately SHARE parts, so the galaxy shows bridges.
   // cids reference the SEED order (1-based): 1 R10k,2 R220,3 C100u,4 C0.1u,5 LLC,
@@ -1758,7 +1834,7 @@ function resolveProj(q){
 function projStats(p){
   let need=0, have=0; const shorts=[];
   p.bom.forEach(l=>{
-    const c=state.items.find(i=>i.cid===l.cid);
+    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null;
     const h=c?c.qty:0;
     need+=l.need; have+=Math.min(h,l.need);
     if (h<l.need) shorts.push({l, c, short:l.need-h});
@@ -1773,7 +1849,7 @@ function printProj(p){
     return;
   }
   p.bom.forEach(l=>{
-    const c=state.items.find(i=>i.cid===l.cid);
+    const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null;
     if (!c){ print(`  ${l.need}x  (part deleted from inventory)`,"a"); return; }
     const ok=c.qty>=l.need;
     print(`  ${(l.need+"x").padEnd(5)}${c.name.slice(0,26).padEnd(28)}have ${String(c.qty).padEnd(5)}BIN ${binStr(c.bin)}  ${ok?"ok":"short "+(l.need-c.qty)}`,
@@ -2044,19 +2120,17 @@ async function exec(line){
       askClassFor(draft); return;
     }
 
-    case "__fr_import": state.firstRun=false; await save(); await exec("import"); return;
+    case "__fr_import": await finishFirstRun(); await exec("import"); return;
     case "__fr_go": {
-      state.items=[]; state.nextCid=1; state.seeded=true; state.seededDemo=false; state.firstRun=false;
-      await save(); home();
+      await finishFirstRun(); home();
       print("ready. default sections are set — add an item: add 10k resistor x50 · rename shelves anytime: sections","g");
       return;
     }
     case "__fr_fresh": {
-      state.items=[]; state.nextCid=1; state.seeded=true; state.seededDemo=false; state.firstRun=false;
-      await save(); setupWizard(0); return;
+      await finishFirstRun(); setupWizard(0); return;
     }
     case "__fr_demo": {
-      await loadDemoData(); await save(); home();
+      await loadDemoData(); home();
       print("demo loaded — opening the project galaxy…","d");
       if (graphMode==="off") setGraph("split");
       g3d=true; setGraphView({kind:"galaxy"});
@@ -2273,7 +2347,7 @@ async function exec(line){
     }
 
     case "proj": case "project": {
-      if (notPorted("Projects / BOM", "Tracked as P5.")) return;
+      await loadProjects();
       const toks0=rest.split(/\s+/);
       const sub=(toks0[0]||"").toLowerCase();
       const r2=rest.slice((toks0[0]||"").length).trim();
@@ -2292,10 +2366,10 @@ async function exec(line){
       if (sub==="new"){
         if (!r2){ print("proj new <name>","a"); return; }
         if (state.projects.some(p=>p.name.toLowerCase()===r2.toLowerCase())){ print("project already exists.","a"); return; }
-        projSnap(`created project ${r2}`);
-        state.projects.push({pid:state.nextPid++, name:r2, status:"planning", bom:[], created:Date.now()});
-        state.activePid=state.nextPid-1;
-        await save();
+        let np;
+        try { np = await DB.addProject(r2); await DB.activate(np.pid); }
+        catch(e){ print("could not create the project: "+e.message,"a"); return; }
+        await loadProjects(); graphSync();
         print(`project ${r2} created and active — proj add ${r2} 2x <part>, or select any row and press p`,"g");
         return;
       }
@@ -2310,19 +2384,22 @@ async function exec(line){
         }).join(" ");
         const rr=await resolve(query); if (rr.err){ print(rr.err,"a"); return; }
         if (rr.many){ print("be more specific:","a"); printRows(rr.many); return; }
-        projSnap(`bom: +${qty}x ${rr.c.name} -> ${pr.p.name}`);
         const line=pr.p.bom.find(l=>l.cid===rr.c.cid);
-        if (line) line.need+=qty; else pr.p.bom.push({cid:rr.c.cid, need:qty});
-        await save(); printProj(pr.p); return;
+        const want=(line?line.need:0)+qty;
+        try { await DB.setBom(pr.p.pid, rr.c.cid, want); }
+        catch(e){ print("could not update the parts list: "+e.message,"a"); return; }
+        await loadProjects(); graphSync();
+        printProj(resolveProj(pr.p.name).p || pr.p); return;
       }
       if (sub==="rm"||sub==="remove"){
         const t2=r2.split(/\s+/);
         const pr=resolveProj(t2[0]); if (pr.err){ print(pr.err,"a"); return; }
         const rr=await resolve(t2.slice(1).join(" ")); if (rr.err){ print(rr.err,"a"); return; }
         if (rr.many){ print("be more specific:","a"); printRows(rr.many); return; }
-        projSnap(`bom: removed ${rr.c.name} from ${pr.p.name}`);
-        pr.p.bom=pr.p.bom.filter(l=>l.cid!==rr.c.cid);
-        await save(); printProj(pr.p); return;
+        try { await DB.delBom(pr.p.pid, rr.c.cid); }
+        catch(e){ print("could not remove it: "+e.message,"a"); return; }
+        await loadProjects(); graphSync();
+        printProj(resolveProj(pr.p.name).p || pr.p); return;
       }
       if (sub==="shop"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
@@ -2338,15 +2415,17 @@ async function exec(line){
         const pname = sub==="done" ? r2 : t2.join(" ");
         if (!["planning","building","done"].includes(stt)){ print("status: planning | building | done","a"); return; }
         const pr=resolveProj(pname); if (pr.err){ print(pr.err,"a"); return; }
-        projSnap(`${pr.p.name} status -> ${stt}`);
-        pr.p.status=stt; await save(); print(`${pr.p.name} -> [${stt}]`,"g"); return;
+        try { await DB.editProject(pr.p.pid, {status:stt}); }
+        catch(e){ print("could not change the status: "+e.message,"a"); return; }
+        await loadProjects(); graphSync();
+        print(`${pr.p.name} -> [${stt}]`,"g"); return;
       }
       if (sub==="del"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
-        projSnap(`deleted project ${pr.p.name}`);
-        state.projects=state.projects.filter(p=>p!==pr.p);
-        if (state.activePid===pr.p.pid) state.activePid=null;
-        await save(); print(`project ${pr.p.name} deleted. (undo restores)`,"a"); return;
+        try { await DB.delProject(pr.p.pid); }
+        catch(e){ print("could not delete it: "+e.message,"a"); return; }
+        await loadProjects(); graphSync();
+        print(`project ${pr.p.name} deleted. (undo restores it and its parts list)`,"a"); return;
       }
       if (sub==="print"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
@@ -2357,16 +2436,18 @@ async function exec(line){
       }
       if (sub==="use"){
         const pr=resolveProj(r2); if (pr.err){ print(pr.err,"a"); return; }
-        state.activePid=pr.p.pid; await save();
+        try { await DB.activate(pr.p.pid); } catch(e){ print(e.message,"a"); return; }
+        await loadProjects(); graphSync();
         print(`${pr.p.name} is now active — p on any selected row adds to it`,"g"); return;
       }
       const pr=resolveProj(rest); if (pr.err){ print(pr.err,"a"); return; }
-      state.activePid=pr.p.pid; await save();
-      printProj(pr.p); return;
+      try { await DB.activate(pr.p.pid); } catch(e){ print(e.message,"a"); return; }
+      await loadProjects(); graphSync();
+      printProj(resolveProj(pr.p.name).p || pr.p); return;
     }
 
     case "build": {
-      if (notPorted("Build / pick list", "Needs projects first (P5).")) return;
+      await loadProjects();
       const t2=rest.split(/\s+/);
       const partial=t2[t2.length-1]?.toLowerCase()==="partial";
       const pname=partial?t2.slice(0,-1).join(" "):rest;
@@ -2379,14 +2460,18 @@ async function exec(line){
         print(`proj shop ${pr.p.name} for the buy list · or: build ${pr.p.name} partial`,"d");
         return;
       }
-      snapshotUndo(`built ${pr.p.name}${partial?" (partial)":""}`);
+      // Each line is its own atomic decrement on the server. A build is therefore
+      // several log entries rather than one — which is the honest record of what
+      // happened, and each step is individually reversible.
       let taken=0;
-      pr.p.bom.forEach(l=>{
-        const c=state.items.find(i=>i.cid===l.cid); if(!c) return;
-        const t3=Math.min(l.need,c.qty); c.qty-=t3; taken+=t3;
-      });
-      pr.p.status="building";
-      await save();
+      for (const l of pr.p.bom){
+        const t3=Math.min(l.need, l.have);
+        if (t3<=0) continue;
+        try { await DB.adjust(l.cid, -t3); taken+=t3; }
+        catch(e){ print(`could not take ${l.name}: ${e.message}`,"a"); }
+      }
+      try { await DB.editProject(pr.p.pid, {status:"building"}); }catch(e){}
+      await loadProjects(); await refreshSummary(); deptCache=null; updateBadge(); graphSync();
       print(`built ${pr.p.name} — took ${taken} pcs across ${pr.p.bom.length} BOM line${pr.p.bom.length===1?"":"s"}. (one undo returns everything)`,"g");
       print(`  paper pick list: proj print ${pr.p.name}`,"d");
       const lows=summary.low;
@@ -2818,7 +2903,7 @@ function buildGraphData(){
       addE("SUN","p"+p.pid);
       // this project's parts orbit its own core
       p.bom.forEach(l=>{
-        const c=state.items.find(i=>i.cid===l.cid); if(!c) return;
+        const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null; if(!c) return;
         const nidk="pc"+p.pid+"_"+c.cid;
         addN(nidk,"part",c.name,{cmd:"info "+cidStr(c), low:c.qty<=c.min});
         addE("p"+p.pid, nidk, 1);
@@ -2858,7 +2943,7 @@ function buildGraphData(){
     if (!p){ gView={kind:"projects"}; return buildGraphData(); }
     addN("p"+p.pid,"proj",p.name,{cmd:"proj "+p.name, active:true, count:p.bom.length*6});
     p.bom.forEach(l=>{
-      const c=state.items.find(i=>i.cid===l.cid); if(!c) return;
+      const c = l.name!==undefined ? {cid:l.cid, name:l.name, qty:l.have, bin:l.bin} : null; if(!c) return;
       addN("c"+c.cid,"part",`${l.need}x ${c.name}`,
         {cmd:"info "+cidStr(c), low:c.qty<l.need || c.qty<=c.min});
       addE("p"+p.pid,"c"+c.cid, l.need);
@@ -3797,13 +3882,15 @@ cmd.addEventListener("keydown", async e=>{
     const cid = el.dataset.cid ? +el.dataset.cid : (liveItems[navSel()]?.cid);
     const it = cid!=null ? state.items.find(c=>c.cid===cid) : null;
     if (!it) return;
+    await loadProjects();
     const ap=state.projects.find(x=>x.pid===state.activePid);
     if (!ap){ print("no active project — proj new <name>, or proj use <name>","a"); return; }
     const line=ap.bom.find(l=>l.cid===it.cid);
-    logAct(`bom: +1x ${it.name} -> ${ap.name}`, {type:"bomline", pid:ap.pid, cid:it.cid, prev: line?line.need:null});
-    if (line) line.need++; else ap.bom.push({cid:it.cid, need:1});
-    await save();
-    print(`+1x ${it.name} -> ${ap.name} (need ${line?line.need:1})`,"g");
+    const want=(line?line.need:0)+1;
+    try { await DB.setBom(ap.pid, it.cid, want); }
+    catch(e){ print("could not add it to the build: "+e.message,"a"); return; }
+    await loadProjects(); graphSync();
+    print(`+1x ${it.name} -> ${ap.name} (need ${want})`,"g");
     return;
   }
 
@@ -4077,7 +4164,8 @@ barr.addEventListener("click", async e=>{
 load().then(async ()=>{
   applyTheme(state.theme||"campbell"); hudOn=state.hud!==false; gCores=state.cores!==false;
   document.body.classList.toggle("bar-off", !!state.barOff);
-  if (state.firstRun && !state.shopName && (state.seededDemo || (state.seeded && state.items.length))){
+  await loadProjects();
+  if (state.firstRun && !state.shopName){
     updateBadge(); firstRun(); cmd.focus();
   } else { updateBadge(); home(); cmd.focus(); }
   await restoreBackupHandle();

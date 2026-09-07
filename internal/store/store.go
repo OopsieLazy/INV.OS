@@ -98,6 +98,7 @@ type Project struct {
 	PID       int64  `json:"pid"`
 	Name      string `json:"name"`
 	Notes     string `json:"notes"`
+	Status    string `json:"status"` // planning | building | done
 	CreatedAt int64  `json:"created"`
 	Active    bool   `json:"active"`
 	Parts     int    `json:"parts"` // computed line count
@@ -108,8 +109,17 @@ type BomLine struct {
 	PID  int64  `json:"pid"`
 	CID  int64  `json:"cid"`
 	Name string `json:"name"` // joined for display
+	Bin  int    `json:"bin"`  // joined, so a pick list can walk the shelves in order
 	Need int    `json:"need"`
 	Have int    `json:"have"` // joined current stock
+}
+
+// SharedPart is one item that appears in several projects.
+type SharedPart struct {
+	CID      int64   `json:"cid"`
+	Name     string  `json:"name"`
+	Bin      int     `json:"bin"`
+	Projects []int64 `json:"projects"`
 }
 
 // LogEntry is one mutation. Entries carrying an Undo payload are reversible;
@@ -160,7 +170,20 @@ type Store interface {
 
 	// projects
 	Projects(ctx context.Context) ([]Project, error)
+	Project(ctx context.Context, pid int64) (Project, error)
+	AddProject(ctx context.Context, name string) (Project, error)
+	UpdateProject(ctx context.Context, pid int64, patch map[string]any) (Project, error)
+	DeleteProject(ctx context.Context, pid int64) error
+	SetActiveProject(ctx context.Context, pid int64) error
+
+	// bill of materials
 	Bom(ctx context.Context, pid int64) ([]BomLine, error)
+	SetBomLine(ctx context.Context, pid, cid int64, need int) error
+	RemoveBomLine(ctx context.Context, pid, cid int64) error
+	// SharedParts reports parts used by more than one project. It is what draws the
+	// bridges between clusters in the galaxy view, and doing it in SQL avoids
+	// pulling every BOM into the browser to intersect them.
+	SharedParts(ctx context.Context) ([]SharedPart, error)
 
 	// history
 	Log(ctx context.Context, limit, offset int) (Page[LogEntry], error)

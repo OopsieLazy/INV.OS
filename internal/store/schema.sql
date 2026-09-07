@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS projects (
   pid        INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT    NOT NULL,
   notes      TEXT    NOT NULL DEFAULT '',
+  status     TEXT    NOT NULL DEFAULT 'planning',
   created_at INTEGER NOT NULL,
   active     INTEGER NOT NULL DEFAULT 0
 );

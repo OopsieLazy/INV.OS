@@ -144,9 +144,31 @@ const api = {
 };
 
 async function runChecks(page, t, consoleErrors) {
+  console.log('\nfirst run');
+
+  // A brand new database has never been set up, so the welcome doors come first.
+  const welcome = await t.screen();
+  check('a fresh database opens on the welcome doors',
+    /Welcome/i.test(welcome) && /just start/i.test(welcome), welcome.slice(0, 240));
+
+  // Take the demo door: it seeds items AND connected projects in one go.
+  await t.run('__fr_demo');
+  await page.waitForTimeout(600);
+  const demoItems = await api.get('/api/stats');
+  check('the demo door seeded the database', demoItems.items >= 10,
+    `server reports ${demoItems.items} items`);
+
+  const demoProjects = await api.get('/api/projects');
+  check('the demo door created projects', demoProjects.length === 4,
+    `server reports ${demoProjects.length} projects`);
+
+  const bridges = await api.get('/api/shared-parts');
+  check('demo projects share parts (the galaxy bridges)', bridges.length > 0,
+    `${bridges.length} shared parts`);
+
   console.log('\nterminal');
 
-  // The app opens with demo data, so the home screen has content immediately.
+  await t.key('Escape');
   const home = await t.screen();
   check('home screen lists the ten departments',
     /ELECTRICAL/.test(home) && /TOOLS/.test(home), home.slice(0, 200));
@@ -240,6 +262,50 @@ async function runChecks(page, t, consoleErrors) {
   const log = await api.get('/api/log?limit=50');
   check('every action was written to the activity log', log.total >= 5,
     `log holds ${log.total} entries`);
+
+  // ── projects and BOM, driven from the terminal, checked in the database ───
+  console.log('\nprojects');
+
+  await t.run('proj new TestRig');
+  const projs = await api.get('/api/projects');
+  const rig = projs.find(p => p.name === 'TestRig');
+  check('proj new created a project server-side', !!rig,
+    `server has ${projs.map(p => p.name).join(', ')}`);
+  check('a new project becomes the active one', rig && rig.active);
+
+  await t.run('proj add TestRig 3x Breadboard');
+  const bom = await api.get(`/api/projects/${rig.pid}/bom`);
+  check('proj add wrote a BOM line', bom.length === 1 && bom[0].need === 3,
+    JSON.stringify(bom));
+  check('the BOM line reports live stock', bom.length === 1 && bom[0].have > 0,
+    JSON.stringify(bom));
+
+  await t.run('undo');
+  const bomAfterUndo = await api.get(`/api/projects/${rig.pid}/bom`);
+  check('undo removed the BOM line', bomAfterUndo.length === 0,
+    JSON.stringify(bomAfterUndo));
+
+  await t.run('proj del TestRig');
+  const projsAfter = await api.get('/api/projects');
+  check('proj del removed it', !projsAfter.some(p => p.name === 'TestRig'),
+    projsAfter.map(p => p.name).join(', '));
+
+  // ── stale-data guard ──────────────────────────────────────────────────────
+  // The service worker caches the app shell. It must NOT cache /api/, or the same
+  // GET returns yesterday's inventory forever — a bin that reads 40 when the drawer
+  // holds 4. This repeats one identical request across a change and demands the
+  // second answer differ.
+  console.log('\nstale data');
+  const before = await page.evaluate(() => fetch('/api/stats').then(r => r.json()));
+  await fetch(`${BASE}/api/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Cache Canary', bin: 9910, qty: 1 }),
+  });
+  const after = await page.evaluate(() => fetch('/api/stats').then(r => r.json()));
+  check('an identical API request is not served from a stale cache',
+    after.items === before.items + 1,
+    `items went ${before.items} -> ${after.items}; the service worker must skip /api/`);
 
   // ── the reason the exe exists: two devices, one inventory ─────────────────
   console.log('\nmulti-device (one database, two browsers)');

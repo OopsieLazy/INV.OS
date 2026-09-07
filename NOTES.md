@@ -1358,3 +1358,49 @@ This is deliberate: an inventory tool that quietly forgets is worse than one tha
 ## Still to do (roadmap P5-P7)
 Projects/BOM writes need store+API support (reads already exist), then cycle count,
 then wiring the importer to the bulk endpoint that already exists.
+
+---
+
+# v21.2 — P5: projects & BOM in the database (+ a nasty stale-cache bug)
+
+## The service-worker bug (found by accident, would have been ugly in a shop)
+The PWA service worker was cache-FIRST for every GET, including `/api/`. So the
+second time the app asked for the same URL it got the first answer back — forever.
+A bin could read 40 while the drawer held 4, and no amount of reloading would fix it.
+It only surfaced because a project created seconds earlier did not appear in the list.
+
+`/api/` is now network-only; the shell (HTML, icons, lazy libs) is still cached, so
+the station still starts instantly. Cache bumped to invos-v4.
+
+Guarded by a test that repeats ONE identical request across a change and demands the
+second answer differ — the shape of bug that is invisible until it is expensive.
+
+## Projects / BOM (P5)
+- Store: Project/AddProject/UpdateProject/DeleteProject/SetActiveProject, SetBomLine,
+  RemoveBomLine, SharedParts. Projects gained a `status` column.
+- Undo handlers for all of it: proj.add/edit/del and bom.set/del. Deleting a project
+  stashes its part list too, so undo restores the build AND its BOM, with the original
+  pid so the lines still point at it.
+- `SharedParts` finds items used by more than one project in SQL — that is what draws
+  the bridges between clusters in the galaxy view, and it means the browser never has
+  to pull every BOM to intersect them.
+- API: full REST for projects and BOM lines, plus /api/shared-parts.
+- BOM lines come back joined with the part's name, bin and live stock, so "need 4,
+  have 2" needs no second query per line.
+- List endpoints now return `[]` rather than `null` when empty.
+- UI: `proj`, `build`, the `p` key and the project views are un-gated and wired to the
+  API. Projects ARE loaded in full — unlike items — because a shop has tens of builds
+  with a few lines each. That is bounded, and it keeps the graph/galaxy code working.
+
+## First run is a shop fact, not a browser fact
+`setup_done` lives in the database, so the second tablet to open the app does not get
+the welcome screen again. The demo door now seeds items AND four connected projects
+through the API, which is what gives the galaxy its shared-part bridges.
+
+## Verified
+- 26 Go store tests (6 new: project lifecycle, BOM tracking live stock, deleting an
+  item clearing its BOM lines, undo of project delete restoring the BOM, undo of BOM
+  changes, shared-part bridges).
+- 33 UI end-to-end checks, now covering the first-run doors, the demo seed creating
+  projects with shared parts, proj new/add/undo/del against the database, and the
+  stale-cache guard.

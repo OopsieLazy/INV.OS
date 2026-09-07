@@ -54,7 +54,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sections/{code}", s.putSection)
 
 	mux.HandleFunc("GET /api/projects", s.listProjects)
+	mux.HandleFunc("POST /api/projects", s.addProject)
+	mux.HandleFunc("GET /api/projects/{pid}", s.getProject)
+	mux.HandleFunc("PATCH /api/projects/{pid}", s.patchProject)
+	mux.HandleFunc("DELETE /api/projects/{pid}", s.deleteProject)
+	mux.HandleFunc("POST /api/projects/{pid}/active", s.activateProject)
 	mux.HandleFunc("GET /api/projects/{pid}/bom", s.projectBom)
+	mux.HandleFunc("PUT /api/projects/{pid}/bom/{cid}", s.putBomLine)
+	mux.HandleFunc("DELETE /api/projects/{pid}/bom/{cid}", s.deleteBomLine)
+	mux.HandleFunc("GET /api/shared-parts", s.sharedParts)
 
 	mux.HandleFunc("GET /api/log", s.listLog)
 	mux.HandleFunc("POST /api/undo", s.undo)
@@ -446,6 +454,144 @@ func (s *Server) projectBom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, lines)
+}
+
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	p, err := s.st.Project(r.Context(), pid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) addProject(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("a project needs a name"))
+		return
+	}
+	p, err := s.st.AddProject(r.Context(), strings.TrimSpace(body.Name))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var patch map[string]any
+	if err := readJSON(r, &patch); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	p, err := s.st.UpdateProject(r.Context(), pid, patch)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.DeleteProject(r.Context(), pid); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// activateProject makes one build the active one. Posting pid 0 clears the selection.
+func (s *Server) activateProject(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.SetActiveProject(r.Context(), pid); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"active": pid})
+}
+
+func (s *Server) putBomLine(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	cid, err := pathInt(r, "cid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var body struct {
+		Need int `json:"need"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.SetBomLine(r.Context(), pid, cid, body.Need); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	lines, err := s.st.Bom(r.Context(), pid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, lines)
+}
+
+func (s *Server) deleteBomLine(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	cid, err := pathInt(r, "cid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.RemoveBomLine(r.Context(), pid, cid); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sharedParts feeds the galaxy view's bridges between project clusters.
+func (s *Server) sharedParts(w http.ResponseWriter, r *http.Request) {
+	sp, err := s.st.SharedParts(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sp)
 }
 
 func (s *Server) listLog(w http.ResponseWriter, r *http.Request) {

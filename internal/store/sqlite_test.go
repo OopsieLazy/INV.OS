@@ -471,3 +471,227 @@ func TestBulkAddUndoesAsOneStep(t *testing.T) {
 		t.Errorf("after undoing the import: %d items, want 0", st.Items)
 	}
 }
+
+func TestProjectLifecycle(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	p, err := s.AddProject(ctx, "Weather Station")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PID == 0 || p.Status != "planning" {
+		t.Fatalf("new project: %+v", p)
+	}
+
+	if _, err := s.UpdateProject(ctx, p.PID, map[string]any{"status": "building", "notes": "on the bench"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Project(ctx, p.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "building" || got.Notes != "on the bench" {
+		t.Errorf("after edit: %+v", got)
+	}
+
+	if _, err := s.UpdateProject(ctx, p.PID, map[string]any{"pid": 9}); err == nil {
+		t.Error("editing pid was allowed; it must be refused")
+	}
+
+	// exactly one project is active at a time
+	q, _ := s.AddProject(ctx, "Robot Arm")
+	if err := s.SetActiveProject(ctx, p.PID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetActiveProject(ctx, q.PID); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.Projects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := 0
+	for _, x := range list {
+		if x.Active {
+			active++
+			if x.PID != q.PID {
+				t.Errorf("wrong project active: %d", x.PID)
+			}
+		}
+	}
+	if active != 1 {
+		t.Errorf("%d projects active, want exactly 1", active)
+	}
+}
+
+func TestBomTracksStock(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	esp := add(t, s, "ESP32 DevKit", 1610, 3, 1)
+	oled := add(t, s, "OLED 128x64", 1510, 1, 1)
+	p, _ := s.AddProject(ctx, "Weather Station")
+
+	if err := s.SetBomLine(ctx, p.PID, esp.CID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetBomLine(ctx, p.PID, oled.CID, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := s.Bom(ctx, p.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("%d BOM lines, want 2", len(lines))
+	}
+	// the join must report live stock, so "need 2, have 1" is visible without a
+	// second query per line
+	for _, l := range lines {
+		switch l.CID {
+		case esp.CID:
+			if l.Need != 1 || l.Have != 3 {
+				t.Errorf("esp line need %d have %d, want 1/3", l.Need, l.Have)
+			}
+		case oled.CID:
+			if l.Need != 2 || l.Have != 1 {
+				t.Errorf("oled line need %d have %d, want 2/1", l.Need, l.Have)
+			}
+		}
+	}
+
+	// taking stock must be reflected in the BOM view straight away
+	if _, err := s.AdjustQty(ctx, esp.CID, -2); err != nil {
+		t.Fatal(err)
+	}
+	lines, _ = s.Bom(ctx, p.PID)
+	for _, l := range lines {
+		if l.CID == esp.CID && l.Have != 1 {
+			t.Errorf("after taking 2, BOM shows have %d, want 1", l.Have)
+		}
+	}
+
+	if err := s.RemoveBomLine(ctx, p.PID, oled.CID); err != nil {
+		t.Fatal(err)
+	}
+	if lines, _ = s.Bom(ctx, p.PID); len(lines) != 1 {
+		t.Errorf("%d lines after removing one, want 1", len(lines))
+	}
+}
+
+// Deleting an item must not leave a dangling BOM line pointing at nothing.
+func TestDeletingAnItemClearsItsBomLines(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	it := add(t, s, "Jumper Wires", 1810, 100, 10)
+	p, _ := s.AddProject(ctx, "Robot Arm")
+	if err := s.SetBomLine(ctx, p.PID, it.CID, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteItem(ctx, it.CID); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := s.Bom(ctx, p.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 0 {
+		t.Errorf("%d BOM lines survived the item deletion", len(lines))
+	}
+}
+
+// Undoing a project deletion must bring back the build AND its parts list.
+func TestUndoProjectDeleteRestoresBom(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	a := add(t, s, "ESP32", 1610, 5, 1)
+	b := add(t, s, "OLED", 1510, 5, 1)
+	p, _ := s.AddProject(ctx, "Desk Clock")
+	s.SetBomLine(ctx, p.PID, a.CID, 1)
+	s.SetBomLine(ctx, p.PID, b.CID, 2)
+
+	if err := s.DeleteProject(ctx, p.PID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Project(ctx, p.PID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("project still there after delete: %v", err)
+	}
+	if _, err := s.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	back, err := s.Project(ctx, p.PID)
+	if err != nil {
+		t.Fatalf("undo did not restore the project: %v", err)
+	}
+	if back.PID != p.PID || back.Name != "Desk Clock" {
+		t.Errorf("restored %+v, want the original", back)
+	}
+	lines, _ := s.Bom(ctx, p.PID)
+	if len(lines) != 2 {
+		t.Errorf("%d BOM lines restored, want 2", len(lines))
+	}
+}
+
+func TestUndoBomChanges(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	it := add(t, s, "Screws M3", 2110, 500, 50)
+	p, _ := s.AddProject(ctx, "Enclosure")
+
+	s.SetBomLine(ctx, p.PID, it.CID, 8)
+	s.SetBomLine(ctx, p.PID, it.CID, 12) // change the quantity
+	if _, err := s.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := s.Bom(ctx, p.PID)
+	if len(lines) != 1 || lines[0].Need != 8 {
+		t.Fatalf("after undoing the change: %+v, want need 8", lines)
+	}
+	if _, err := s.Undo(ctx); err != nil { // undo the original add
+		t.Fatal(err)
+	}
+	if lines, _ = s.Bom(ctx, p.PID); len(lines) != 0 {
+		t.Errorf("%d lines after undoing the add, want 0", len(lines))
+	}
+}
+
+// SharedParts is what draws the bridges between clusters in the galaxy view.
+func TestSharedPartsFindsBridges(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	esp := add(t, s, "ESP32", 1610, 10, 1)
+	oled := add(t, s, "OLED", 1510, 10, 1)
+	only := add(t, s, "Stepper", 1520, 10, 1)
+
+	weather, _ := s.AddProject(ctx, "Weather Station")
+	clock, _ := s.AddProject(ctx, "Desk Clock")
+	arm, _ := s.AddProject(ctx, "Robot Arm")
+
+	s.SetBomLine(ctx, weather.PID, esp.CID, 1)
+	s.SetBomLine(ctx, clock.PID, esp.CID, 1)
+	s.SetBomLine(ctx, weather.PID, oled.CID, 1)
+	s.SetBomLine(ctx, clock.PID, oled.CID, 1)
+	s.SetBomLine(ctx, arm.PID, only.CID, 1)
+
+	shared, err := s.SharedParts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shared) != 2 {
+		t.Fatalf("%d shared parts, want 2 (ESP32 and OLED)", len(shared))
+	}
+	for _, sp := range shared {
+		if len(sp.Projects) != 2 {
+			t.Errorf("%s shared by %d projects, want 2", sp.Name, len(sp.Projects))
+		}
+		if sp.CID == only.CID {
+			t.Error("a part used by one project was reported as shared")
+		}
+	}
+}

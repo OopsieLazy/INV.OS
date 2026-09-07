@@ -699,7 +699,7 @@ func (s *SQLite) Sections(ctx context.Context, dept int) ([]Section, error) {
 	}
 	defer rows.Close()
 
-	var out []Section
+	out := []Section{}
 	for rows.Next() {
 		var sec Section
 		if err := rows.Scan(&sec.Code, &sec.Dept, &sec.Digit, &sec.Label, &sec.Items); err != nil {
@@ -796,23 +796,31 @@ func (s *SQLite) reindexDept(ctx context.Context, tx *sql.Tx, dept int) error {
 
 // ── projects ────────────────────────────────────────────────────────────────
 
+const projCols = `p.pid, p.name, p.notes, p.status, p.created_at, p.active`
+
+func scanProject(sc interface{ Scan(...any) error }) (Project, error) {
+	var p Project
+	err := sc.Scan(&p.PID, &p.Name, &p.Notes, &p.Status, &p.CreatedAt, &p.Active, &p.Parts)
+	return p, err
+}
+
 // Projects lists builds with their BOM line counts.
 func (s *SQLite) Projects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.pid, p.name, p.notes, p.created_at, p.active, COALESCE(COUNT(b.cid), 0)
+		SELECT `+projCols+`, COALESCE(COUNT(b.cid), 0)
 		  FROM projects p
 		  LEFT JOIN bom b ON b.pid = p.pid
-		 GROUP BY p.pid, p.name, p.notes, p.created_at, p.active
+		 GROUP BY p.pid, p.name, p.notes, p.status, p.created_at, p.active
 		 ORDER BY p.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []Project
+	out := []Project{}
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.PID, &p.Name, &p.Notes, &p.CreatedAt, &p.Active, &p.Parts); err != nil {
+		p, err := scanProject(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -820,11 +828,244 @@ func (s *SQLite) Projects(ctx context.Context) ([]Project, error) {
 	return out, rows.Err()
 }
 
+// Project fetches one build.
+func (s *SQLite) Project(ctx context.Context, pid int64) (Project, error) {
+	p, err := scanProject(s.db.QueryRowContext(ctx, `
+		SELECT `+projCols+`, COALESCE(COUNT(b.cid), 0)
+		  FROM projects p LEFT JOIN bom b ON b.pid = p.pid
+		 WHERE p.pid = ?
+		 GROUP BY p.pid, p.name, p.notes, p.status, p.created_at, p.active`, pid))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	return p, err
+}
+
+// AddProject starts a new build.
+func (s *SQLite) AddProject(ctx context.Context, name string) (Project, error) {
+	var p Project
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		now := time.Now().UnixMilli()
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO projects(name, created_at) VALUES(?,?)`, name, now)
+		if err != nil {
+			return err
+		}
+		pid, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		p = Project{PID: pid, Name: name, Status: "planning", CreatedAt: now}
+		undo, _ := json.Marshal(map[string]any{"pid": pid})
+		return appendLog(ctx, tx, "proj.add", "started project "+name, nil, string(undo))
+	})
+	return p, err
+}
+
+var projPatchable = map[string]bool{"name": true, "notes": true, "status": true}
+
+// UpdateProject edits a build's fields, recording the before-state for undo.
+func (s *SQLite) UpdateProject(ctx context.Context, pid int64, patch map[string]any) (Project, error) {
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var before Project
+		err := tx.QueryRowContext(ctx,
+			`SELECT pid, name, notes, status FROM projects WHERE pid=?`, pid).
+			Scan(&before.PID, &before.Name, &before.Notes, &before.Status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		cols := make([]string, 0, len(patch))
+		for col := range patch {
+			if !projPatchable[col] {
+				return fmt.Errorf("field %q is not editable on a project", col)
+			}
+			cols = append(cols, col)
+		}
+		if len(cols) == 0 {
+			return nil
+		}
+		sort.Strings(cols) // columns and their values must be ordered together
+		sets := make([]string, 0, len(cols))
+		args := make([]any, 0, len(cols)+1)
+		for _, c := range cols {
+			sets = append(sets, c+"=?")
+			args = append(args, patch[c])
+		}
+		args = append(args, pid)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE projects SET `+strings.Join(sets, ",")+` WHERE pid=?`, args...); err != nil {
+			return err
+		}
+		undo, _ := json.Marshal(map[string]any{"pid": pid, "projBefore": before})
+		return appendLog(ctx, tx, "proj.edit", "edited project "+before.Name, nil, string(undo))
+	})
+	if err != nil {
+		return Project{}, err
+	}
+	return s.Project(ctx, pid)
+}
+
+// DeleteProject removes a build and its BOM lines. The lines go with it through the
+// foreign key, and the whole thing is stashed so undo can put it back.
+func (s *SQLite) DeleteProject(ctx context.Context, pid int64) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var p Project
+		err := tx.QueryRowContext(ctx,
+			`SELECT pid, name, notes, status, created_at FROM projects WHERE pid=?`, pid).
+			Scan(&p.PID, &p.Name, &p.Notes, &p.Status, &p.CreatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT cid, qty FROM bom WHERE pid=?`, pid)
+		if err != nil {
+			return err
+		}
+		var lines []bomSnapshot
+		for rows.Next() {
+			var l bomSnapshot
+			if err := rows.Scan(&l.CID, &l.Qty); err != nil {
+				rows.Close()
+				return err
+			}
+			lines = append(lines, l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE pid=?`, pid); err != nil {
+			return err
+		}
+		undo, _ := json.Marshal(map[string]any{"projGone": p, "bomGone": lines})
+		return appendLog(ctx, tx, "proj.del", "deleted project "+p.Name, nil, string(undo))
+	})
+}
+
+// bomSnapshot is one stashed BOM line, used to restore a deleted project.
+type bomSnapshot struct {
+	CID int64 `json:"cid"`
+	Qty int   `json:"qty"`
+}
+
+// SetActiveProject marks one build active and clears the rest. Exactly one project is
+// active at a time, which is what the graph and the build flow key off.
+func (s *SQLite) SetActiveProject(ctx context.Context, pid int64) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET active=0 WHERE active=1`); err != nil {
+			return err
+		}
+		if pid <= 0 {
+			return nil
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE projects SET active=1 WHERE pid=?`, pid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// SetBomLine adds a part to a build, or changes how many the build needs.
+func (s *SQLite) SetBomLine(ctx context.Context, pid, cid int64, need int) error {
+	if need < 1 {
+		return fmt.Errorf("a BOM line needs at least 1")
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var before int
+		err := tx.QueryRowContext(ctx, `SELECT qty FROM bom WHERE pid=? AND cid=?`, pid, cid).Scan(&before)
+		existed := err == nil
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO bom(pid,cid,qty) VALUES(?,?,?)
+			 ON CONFLICT(pid,cid) DO UPDATE SET qty=excluded.qty`, pid, cid, need); err != nil {
+			return err
+		}
+		var name string
+		tx.QueryRowContext(ctx, `SELECT name FROM items WHERE cid=?`, cid).Scan(&name)
+		verb := "added"
+		if existed {
+			verb = "changed to"
+		}
+		undo, _ := json.Marshal(map[string]any{
+			"pid": pid, "cid": cid, "bomBefore": before, "bomExisted": existed})
+		return appendLog(ctx, tx, "bom.set",
+			fmt.Sprintf("%s %d x %s in the build", verb, need, name), &cid, string(undo))
+	})
+}
+
+// RemoveBomLine drops a part from a build.
+func (s *SQLite) RemoveBomLine(ctx context.Context, pid, cid int64) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var before int
+		err := tx.QueryRowContext(ctx, `SELECT qty FROM bom WHERE pid=? AND cid=?`, pid, cid).Scan(&before)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM bom WHERE pid=? AND cid=?`, pid, cid); err != nil {
+			return err
+		}
+		var name string
+		tx.QueryRowContext(ctx, `SELECT name FROM items WHERE cid=?`, cid).Scan(&name)
+		undo, _ := json.Marshal(map[string]any{
+			"pid": pid, "cid": cid, "bomBefore": before, "bomExisted": true, "bomRemoved": true})
+		return appendLog(ctx, tx, "bom.del", "removed "+name+" from the build", &cid, string(undo))
+	})
+}
+
+// SharedParts reports every item used by more than one project, with the projects using
+// it. The galaxy view draws these as the bridges between clusters, and computing it in
+// SQL avoids pulling every BOM into the browser to intersect them there.
+func (s *SQLite) SharedParts(ctx context.Context) ([]SharedPart, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT b.cid, i.name, i.bin, b.pid
+		  FROM bom b
+		  JOIN items i ON i.cid = b.cid
+		 WHERE b.cid IN (SELECT cid FROM bom GROUP BY cid HAVING COUNT(DISTINCT pid) > 1)
+		 ORDER BY b.cid, b.pid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []SharedPart{}
+	for rows.Next() {
+		var (
+			cid  int64
+			name string
+			bin  int
+			pid  int64
+		)
+		if err := rows.Scan(&cid, &name, &bin, &pid); err != nil {
+			return nil, err
+		}
+		if n := len(out); n > 0 && out[n-1].CID == cid {
+			out[n-1].Projects = append(out[n-1].Projects, pid)
+			continue
+		}
+		out = append(out, SharedPart{CID: cid, Name: name, Bin: bin, Projects: []int64{pid}})
+	}
+	return out, rows.Err()
+}
+
 // Bom returns a project's part list joined against current stock, so the UI can show
 // "need 4, have 2" without a second round trip per line.
+//
+// Like the other list methods here it returns an empty slice rather than nil, so the
+// JSON layer emits [] and clients never have to guard against null.
 func (s *SQLite) Bom(ctx context.Context, pid int64) ([]BomLine, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT b.pid, b.cid, i.name, b.qty, i.qty
+		SELECT b.pid, b.cid, i.name, i.bin, b.qty, i.qty
 		  FROM bom b
 		  JOIN items i ON i.cid = b.cid
 		 WHERE b.pid = ?
@@ -834,10 +1075,10 @@ func (s *SQLite) Bom(ctx context.Context, pid int64) ([]BomLine, error) {
 	}
 	defer rows.Close()
 
-	var out []BomLine
+	out := []BomLine{}
 	for rows.Next() {
 		var l BomLine
-		if err := rows.Scan(&l.PID, &l.CID, &l.Name, &l.Need, &l.Have); err != nil {
+		if err := rows.Scan(&l.PID, &l.CID, &l.Name, &l.Bin, &l.Need, &l.Have); err != nil {
 			return nil, err
 		}
 		out = append(out, l)
@@ -910,6 +1151,14 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 			Before *Item `json:"before"`
 			From   int64 `json:"from"`
 			To     int64 `json:"to"`
+
+			PID        int64         `json:"pid"`
+			ProjBefore *Project      `json:"projBefore"`
+			ProjGone   *Project      `json:"projGone"`
+			BomGone    []bomSnapshot `json:"bomGone"`
+			BomBefore  int           `json:"bomBefore"`
+			BomExisted bool          `json:"bomExisted"`
+			BomRemoved bool          `json:"bomRemoved"`
 		}
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return fmt.Errorf("undo payload for log %d is unreadable: %w", e.ID, err)
@@ -935,6 +1184,43 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 					_, err = tx.ExecContext(ctx, `UPDATE items SET norm=? WHERE cid=?`, hay, it.CID)
 				}
 			}
+		case "proj.add":
+			_, err = tx.ExecContext(ctx, `DELETE FROM projects WHERE pid=?`, p.PID)
+		case "proj.edit":
+			if p.ProjBefore == nil {
+				return fmt.Errorf("undo payload for log %d has no project before-state", e.ID)
+			}
+			b := *p.ProjBefore
+			_, err = tx.ExecContext(ctx,
+				`UPDATE projects SET name=?, notes=?, status=? WHERE pid=?`,
+				b.Name, b.Notes, b.Status, b.PID)
+		case "proj.del":
+			if p.ProjGone == nil {
+				return fmt.Errorf("undo payload for log %d has no project", e.ID)
+			}
+			g := *p.ProjGone
+			// restored with its ORIGINAL pid so its BOM lines still point at it
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO projects(pid,name,notes,status,created_at) VALUES(?,?,?,?,?)`,
+				g.PID, g.Name, g.Notes, g.Status, g.CreatedAt)
+			for _, l := range p.BomGone {
+				if err != nil {
+					break
+				}
+				_, err = tx.ExecContext(ctx,
+					`INSERT INTO bom(pid,cid,qty) VALUES(?,?,?)`, g.PID, l.CID, l.Qty)
+			}
+		case "bom.set":
+			if p.BomExisted {
+				_, err = tx.ExecContext(ctx,
+					`UPDATE bom SET qty=? WHERE pid=? AND cid=?`, p.BomBefore, p.PID, p.CID)
+			} else {
+				_, err = tx.ExecContext(ctx, `DELETE FROM bom WHERE pid=? AND cid=?`, p.PID, p.CID)
+			}
+		case "bom.del":
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO bom(pid,cid,qty) VALUES(?,?,?)
+				 ON CONFLICT(pid,cid) DO UPDATE SET qty=excluded.qty`, p.PID, p.CID, p.BomBefore)
 		case "import":
 			// a whole import backs out as one step, by the CID block it was given
 			_, err = tx.ExecContext(ctx, `DELETE FROM items WHERE cid BETWEEN ? AND ?`, p.From, p.To)
