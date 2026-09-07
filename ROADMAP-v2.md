@@ -29,7 +29,7 @@ Legend: [x] done · [~] partial · [ ] todo · ★ = recommended next
 ## PHASE A — do next (high impact, low/medium effort, few deps)
 ═══════════════════════════════════════════════════════════════
 
-### A1 — R12 Project Galaxy  [x] DONE v19
+### A1 — R12 Project Galaxy  [x] DONE v19 · orbit mode v21.3
 3D projects-as-galaxy-clusters; shared parts = bridges between clusters; grow over time.
 Why first: highest delight-per-effort, reuses the existing 3D engine/themes/HUD, and it's
 the feature the user is most excited about. Standalone — no backend, no data-model change.
@@ -158,7 +158,7 @@ LAN so shop tablets/phones hit the same inventory. Same codebase becomes the Saa
 - [x] P4 stress test: 100k items — RAM ceiling, query latency  DONE v21.0
 - [ ] P5 LAN mode: bind 0.0.0.0, device discovery, concurrent-edit behavior
 - [ ] P6 packaging: signed .exe, Linux + Pi builds, one-command install
-- [ ] P5 projects / BOM: store+API writes, then un-gate project, build, pick
+- [x] P5 projects / BOM: store+API writes, un-gated project/build/pick  DONE v21.2
 - [ ] P6 cycle count: move counted/countlog into the database, un-gate `count`
 - [ ] P7 spreadsheet import: wire the wizard to POST /api/items/bulk (endpoint exists)
 - [ ] P8 photos: move from per-browser IndexedDB into the database

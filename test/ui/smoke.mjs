@@ -290,6 +290,58 @@ async function runChecks(page, t, consoleErrors) {
   check('proj del removed it', !projsAfter.some(p => p.name === 'TestRig'),
     projsAfter.map(p => p.name).join(', '));
 
+  // ── orbit mode: the galaxy has to actually move ───────────────────────────
+  console.log(String.fromCharCode(10) + 'orbit mode');
+
+  await t.run('graph galaxy');
+  await t.run('graph orbit');
+  // Orbits are captured once the force layout settles, and how long that takes
+  // depends on the machine — so wait for the condition, not for a guessed duration.
+  let settled = true;
+  try {
+    await page.waitForFunction(() => typeof gOrbitInit !== 'undefined' && gOrbitInit,
+      null, { timeout: 8000 });
+  } catch { settled = false; }
+
+  const sample = () => page.evaluate(() =>
+    gNodes.filter(n => n.type !== 'sun').slice(0, 12).map(n => [n.x, n.y, n.z]));
+
+  const drifted = (a, b) => a.some((p, i) =>
+    Math.abs(p[0] - b[i][0]) > 0.01 || Math.abs(p[1] - b[i][1]) > 0.01 ||
+    Math.abs(p[2] - b[i][2]) > 0.01);
+
+  const orbitOn = await page.evaluate(() => gOrbit);
+  check('graph orbit turns the mode on', orbitOn === true);
+  check('orbits were captured once the layout settled', settled,
+    'gOrbitInit never became true within 8s');
+
+  const a1 = await sample();
+  await page.waitForTimeout(500);
+  const a2 = await sample();
+  check('nodes revolve while orbit mode is on', drifted(a1, a2),
+    `first node ${JSON.stringify(a1[0])} -> ${JSON.stringify(a2[0])}`);
+
+  // every orbiting node must keep a fixed distance from its parent — that is what
+  // makes it an orbit rather than the force simulation drifting
+  check('each node holds its orbital radius', await page.evaluate(() => {
+    const byId = {}; gNodes.forEach(n => byId[n.id] = n);
+    return gNodes.every(n => {
+      if (!n.orb) return true;
+      const par = byId[n.orb.parent]; if (!par) return true;
+      const r = Math.hypot(n.x - par.x, n.y - par.y, (n.z || 0) - (par.z || 0));
+      return Math.abs(r - n.orb.r) < 0.5;
+    });
+  }));
+
+  await t.run('graph orbit');
+  check('graph orbit turns the mode off again',
+    (await page.evaluate(() => gOrbit)) === false);
+
+  await t.run('graph inv');
+  check('the inventory view is left alone by orbit mode',
+    await page.evaluate(() => gNodes.every(n => n.type !== 'proj')));
+  await t.key('Escape');
+
   // ── stale-data guard ──────────────────────────────────────────────────────
   // The service worker caches the app shell. It must NOT cache /api/, or the same
   // GET returns yesterday's inventory forever — a bin that reads 40 when the drawer

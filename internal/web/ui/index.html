@@ -996,21 +996,6 @@ async function loadDemoData(){
   await finishFirstRun();
   state.seededDemo=true;
   deptCache=null; await refreshSummary(); lowDepts=await lowDeptSet();
-  // seed demo PROJECTS that deliberately SHARE parts, so the galaxy shows bridges.
-  // cids reference the SEED order (1-based): 1 R10k,2 R220,3 C100u,4 C0.1u,5 LLC,
-  // 6 HC-SR04,7 OLED,8 Arduino Uno,9 ESP32,10 Jumpers,11 Breadboard,12 Iron
-  const now=Date.now(), day=864e5;
-  state.projects=[
-    {pid:1,name:"Weather Station", status:"building", created:now-40*day,
-      bom:[{cid:9,need:1},{cid:7,need:1},{cid:1,need:4},{cid:10,need:20},{cid:11,need:1}]},   // ESP32,OLED,R10k,Jumpers,Breadboard
-    {pid:2,name:"Robot Arm", status:"planning", created:now-25*day,
-      bom:[{cid:8,need:1},{cid:5,need:2},{cid:6,need:1},{cid:10,need:15},{cid:11,need:1}]},    // Uno,LLC,HC-SR04,Jumpers,Breadboard
-    {pid:3,name:"Desk Clock", status:"done", created:now-10*day,
-      bom:[{cid:9,need:1},{cid:7,need:1},{cid:3,need:2},{cid:2,need:3}]},                      // ESP32,OLED,C100u,R220
-    {pid:4,name:"Line Follower", status:"planning", created:now-3*day,
-      bom:[{cid:8,need:1},{cid:6,need:2},{cid:2,need:4},{cid:10,need:10}]},                    // Uno,HC-SR04,R220,Jumpers
-  ];
-  state.nextPid=5; state.activePid=1;
 }
 
 /* home() stays SYNCHRONOUS and paints from cached aggregates, then refreshes them
@@ -2073,8 +2058,9 @@ async function exec(line){
   \u21b5                  open the selected row (or run the typed command)
   ^\u21b5 take \u00b7 \u21e7\u21b5 stock \u00b7 p add to project  \u2014 on the selected row
   /                    open the command menu       tab (typing)  complete
-  h                    recenter the graph (graph home)   graph 3d/2d/style
-  g                    switch graph view: inventory / projects / galaxy
+  alt+h                recenter the graph (graph home)   graph 3d/2d/style
+  alt+g                switch graph view: inventory / projects / galaxy
+  graph orbit          let the galaxy revolve (a show mode; off by default)
   f1 menu · f2 doctor · f3 3d graph · theme (change the look)
   ^u ^w ^k  clear line / word / to-end     ^a ^e  start / end
   pgup pgdn  scroll        f1  command menu`,"g");
@@ -2589,6 +2575,16 @@ async function exec(line){
       if (ml==="style"){ gStyle = gStyle==="holo"?"clean":"holo"; print(`graph style: ${gStyle==="holo"?"holographic glow":"clean minimal"}`,"d"); return; }
       if (ml==="hud"){ hudOn=!hudOn; state.hud=hudOn; updateHud(); await save(); print(`HUD frame ${hudOn?"on":"off"}`,"d"); return; }
       if (ml==="sweep"){ sweepT=performance.now(); print("sweep","d"); return; }
+      if (["orbit","orbits","planets","spin"].includes(ml)){
+        gOrbit = !gOrbit; gOrbitInit = false;
+        if (gOrbit && gView.kind!=="galaxy" && gView.kind!=="projects") setGraphView({kind:"galaxy"});
+        if (gOrbit && graphMode==="off") setGraph("split");
+        gAlpha = Math.max(gAlpha, 0.6);   // re-heat, so it settles then takes off
+        print(gOrbit
+          ? "orbit mode ON — parts revolve around their project, projects wheel around the sun"
+          : "orbit mode off — back to the static force graph","d");
+        return;
+      }
       if (["home","reset","center","recenter"].includes(ml)){ graphHome(); print("view recentered.","d"); return; }
       if (ml==="off"){ if (gPopped()) dockGraph("off"); else setGraph("off"); return; }
       if (ml==="full"){ setGraph("full"); print("graph full — esc for split.","d"); return; }
@@ -2806,6 +2802,18 @@ async function exec(line){
 }
 
 /* ---------- brain graph: zero-dependency force-directed canvas ---------- */
+/* The graph gets its OWN bounded fetch. state.items is just the current screen, and
+   a force simulation over 100,000 nodes is neither drawable nor useful, so the
+   inventory view draws the first GRAPH_ITEM_CAP parts and the label says when it is
+   showing a sample. */
+const GRAPH_ITEM_CAP = 1500;
+let graphItems = [], graphItemsTotal = 0;
+async function refreshGraphItems(){
+  try {
+    const page = await DB.peek({limit:GRAPH_ITEM_CAP, sort:"bin"});
+    graphItems = page.rows; graphItemsTotal = page.total;
+  } catch(e){ graphItems = []; graphItemsTotal = 0; }
+}
 let graphMode="off", gNodes=[], gEdges=[], gAlpha=0, gRAF=null;
 let gView={kind:"inv"};
 let gWin=null, gPopCanvas=null, gPollTimer=null;      // second-monitor window
@@ -2841,7 +2849,7 @@ function updateHud(){
     : gView.kind==="galaxy"?"NODE GRAPH // GALAXY"
     : gView.kind==="projects"?"NODE GRAPH // PROJECTS" : "NODE GRAPH // PROJECT";
   if (stat){
-    const nodes=gNodes.length, depts=new Set(state.items.map(c=>clsNum(c.bin))).size;
+    const nodes=gNodes.length, depts=new Set(graphItems.map(c=>clsNum(c.bin))).size;
     stat.textContent = `${g3d?"3D":"2D"} · ${nodes} NODES · ${depts} DEPT`;
   }
 }
@@ -2873,11 +2881,11 @@ function buildGraphData(){
 
   if (gView.kind==="inv"){
     /* central "sun": every department orbits SECTIONS */
-    const sun=addN("SUN","sun","SECTIONS",{cmd:"home", count:state.items.length});
+    const sun=addN("SUN","sun","SECTIONS",{cmd:"home", count:graphItemsTotal});
     sun.x=0; sun.y=0; sun.z=0;                 // anchor at the origin
     /* EVERY part in the inventory, hanging off its section -> dept hubs -> sun */
     for (let d=0; d<10; d++){
-      const its=state.items.filter(c=>clsNum(c.bin)===d);
+      const its=graphItems.filter(c=>clsNum(c.bin)===d);
       if (!its.length) continue;
       addN("d"+d,"dept",clsLabel(d).split(" ")[0],{cmd:String(d),count:its.length});
       addE("d"+d,"SUN");
@@ -2927,11 +2935,19 @@ function buildGraphData(){
         {cmd:"proj "+p.name, viewTo:{kind:"proj",pid:p.pid},
          active:p.pid===state.activePid, count:p.bom.length*6, core:true});  // core=cluster center
     });
-    // each distinct part becomes one star, linked to every project that needs it
+    // Each distinct part becomes one star, linked to every project that needs it.
+    // The part details come from the BOM lines themselves — they arrive from the API
+    // already joined with name, bin and live stock, and state.items is only ever the
+    // rows currently on screen.
     const partUse={};   // cid -> [pid,...]
-    projs.forEach(p=>p.bom.forEach(l=>{ (partUse[l.cid] ||= []).push(p.pid); }));
+    const partInfo={};  // cid -> the joined line data
+    projs.forEach(p=>p.bom.forEach(l=>{
+      (partUse[l.cid] ||= []).push(p.pid);
+      partInfo[l.cid] = l;
+    }));
     Object.entries(partUse).forEach(([cid,pids])=>{
-      const c=state.items.find(i=>i.cid===+cid); if(!c) return;
+      const l=partInfo[cid]; if(!l) return;
+      const c={cid:+cid, name:l.name, qty:l.have, min:0, bin:l.bin};
       const shared = pids.length>1;
       addN("c"+c.cid, shared?"shared":"part", c.name,
         {cmd:"info "+cidStr(c), low:c.qty<=c.min, shared});
@@ -2971,8 +2987,88 @@ function nodeR(n){
   const base = n.type==="sun"?18 : n.type==="proj"?13 : n.type==="dept"?10 : n.type==="shared"?7 : n.type==="sec"?6.5 : 4.5;
   return base + Math.min(n.type==="sun"?8:4, (n.count||0)*0.05);
 }
+/* ── orbit mode ──────────────────────────────────────────────────────────────
+   A "show mode" for the galaxy and projects views. Once the force layout has
+   settled, every node stops being simulated and starts revolving: a project's parts
+   around that project's core, the projects around the central sun.
+
+   The orbits are CIRCLES on individually tilted 3D planes. Through the existing
+   perspective camera they read as ellipses, which gives the planetary feel without
+   the cost (or the tuning) of real Kepler ellipses.
+
+   It repaints every frame, so it defaults OFF. */
+let gOrbit = false, gOrbitInit = false;
+
+/* orbitParentMap derives the hierarchy from the edges that are already there:
+   parts hang off their project, projects hang off the sun. Trail edges (w<0, the
+   faint project-to-project links) are skipped — they are not a parent relationship. */
+function orbitParentMap(){
+  const parent = {};
+  gEdges.forEach(e=>{
+    if (e.w < 0) return;
+    const at = e.a.type, bt = e.b.type;
+    if (bt==="sun" || bt==="dept") parent[e.a.id] = e.b.id;
+    else if (at==="sun" || at==="dept") parent[e.b.id] = e.a.id;
+    else if (at==="proj" && bt!=="proj") parent[e.b.id] = e.a.id;
+    else if (bt==="proj" && at!=="proj") parent[e.a.id] = e.b.id;
+  });
+  return parent;
+}
+
+/* initOrbits freezes the settled layout into orbital elements: each node keeps the
+   radius and angle it already had, so switching the mode on does not make anything
+   jump — it just starts moving from where it stopped. */
+function initOrbits(){
+  const parent = orbitParentMap(), byId = {};
+  gNodes.forEach(n=>byId[n.id]=n);
+  gNodes.forEach(n=>{
+    const par = byId[parent[n.id]];
+    if (!par || n.type==="sun"){ n.orb=null; return; }
+    const dx=n.x-par.x, dy=n.y-par.y, dz=(n.z||0)-(par.z||0);
+    const r = Math.max(12, Math.hypot(dx,dy,dz));
+    // a stable per-node seed, so a node keeps its tilt and direction across restarts
+    const seed = (n.cid || n.id.length*7) + r;
+    const incl = (Math.sin(seed)*0.5 + 0.5) * 1.1;     // orbital plane tilt
+    const speed = (0.15 + 0.5/Math.sqrt(r)) * (seed%2 ? 1 : -1) * 0.02;
+    n.orb = { parent:par.id, r, incl, ang:Math.atan2(dy,dx), speed,
+              cx:Math.cos(incl), sx:Math.sin(incl) };
+  });
+  gOrbitInit = true;
+}
+
+/* stepOrbits advances every orbit one frame. The sun stays pinned at the origin. */
+function stepOrbits(dt){
+  const byId = {};
+  gNodes.forEach(n=>byId[n.id]=n);
+  gNodes.forEach(n=>{
+    if (n.type==="sun"){ n.x=0; n.y=0; n.z=0; return; }
+    const o = n.orb; if (!o) return;
+    const par = byId[o.parent]; if (!par) return;
+    o.ang += o.speed*dt;
+    n.x = par.x + Math.cos(o.ang)*o.r;
+    n.y = par.y + Math.sin(o.ang)*o.r*o.cx;
+    n.z = (par.z||0) + Math.sin(o.ang)*o.r*o.sx;
+  });
+}
+
 function gTick(){
   const a=gAlpha;
+
+  // Orbit mode takes over the frame once the layout has settled. It pins gAlpha low
+  // so the force simulation below stays quiet, draws, reschedules, and returns —
+  // the physics and the orbits must never run in the same frame or they fight.
+  if (gOrbit && (gView.kind==="galaxy" || gView.kind==="projects")){
+    if (a<=0.05 && !gOrbitInit) initOrbits();
+    if (gOrbitInit){
+      stepOrbits(1);
+      gAlpha = 0.001;
+      if (g3d && gAutoRot) gYaw += cfg("driftSpeed");
+      gDraw();
+      if (graphMode==="off" && !gPopped()){ gRAF=null; return; }
+      gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
+      return;
+    }
+  }
   if (a>0.015){
     for (let i=0;i<gNodes.length;i++) for (let j=i+1;j<gNodes.length;j++){
       const p=gNodes[i], q=gNodes[j];
@@ -3174,7 +3270,7 @@ function gDraw3D(x, W, H, hoverSet){
       x.font=`${Math.max(8,11*p.scale)}px Consolas,monospace`;
       x.fillStyle = n.type==="proj"?C.white:n.low?C.amber:(holo?hexA(C.cyan,0.85):C.fg);
       x.textAlign="center";
-      x.fillText(n.label.slice(0,20), p.sx, p.sy-r-3);
+      x.fillText(String(n.label||"").slice(0,20), p.sx, p.sy-r-3);
     }
   });
   x.shadowBlur=0; x.globalAlpha=1;
@@ -3212,6 +3308,7 @@ function setGraph(m){
 function setGraphView(v){
   const changed = !gView || gView.kind!==v.kind || gView.pid!==v.pid;
   gView=v;
+  if (changed) gOrbitInit=false;   // radii are captured from the settled layout
   if (graphMode!=="off"){ buildGraphData(); updateGLabel();
     if (changed){ const nm = v.kind==="inv"?"INVENTORY":v.kind==="projects"?"PROJECTS":v.kind==="galaxy"?"GALAXY":
       (state.projects.find(x=>x.pid===v.pid)?.name||"PROJECT"); toast(nm); } }
@@ -3252,7 +3349,11 @@ function graphHome(){          // recenter camera / view — the auto-home
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
   gAlpha=Math.max(gAlpha,0.6);
 }
-function graphSync(){ if (graphMode!=="off"){ buildGraphData(); updateGLabel(); } }
+async function graphSync(){
+  if (graphMode==="off") return;
+  await Promise.all([refreshGraphItems(), gView.kind==="inv" ? null : loadProjects()]);
+  buildGraphData(); updateGLabel();
+}
 /* graph input — bound to the inline pane and, when popped, the second window */
 function bindGraphPointer(cv, win){
   const xy=e=>{ const r=cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; };
@@ -3830,8 +3931,15 @@ cmd.addEventListener("keydown", async e=>{
   if (e.key==="F2" && mode.type==="normal"){ e.preventDefault(); await run("doctor"); return; }
   if (e.key==="F3" && mode.type==="normal"){ e.preventDefault(); await run("graph 3d"); return; }
   if (e.key==="F4" && mode.type==="normal"){ e.preventDefault(); await run("bar"); return; }
-  if (e.key==="h" && mode.type==="normal" && !cmd.value && graphMode!=="off" && navSel()<0){ e.preventDefault(); graphHome(); return; }
-  if (e.key==="g" && mode.type==="normal" && !cmd.value && graphMode!=="off" && navSel()<0){ e.preventDefault(); cycleView(); return; }
+  {
+    const graphKey = (k) => (e.key===k || e.key===k.toUpperCase())
+      && mode.type==="normal" && graphMode!=="off" && navSel()<0
+      // alt from the prompt, or bare when the graph pane itself has focus. Without
+      // this the letter never reaches the input and "graph"/"help" cannot be typed.
+      && (e.altKey || document.activeElement !== cmd);
+    if (graphKey("h")){ e.preventDefault(); graphHome(); return; }
+    if (graphKey("g")){ e.preventDefault(); cycleView(); return; }
+  }
   if ((e.key==="ArrowLeft"||e.key==="ArrowRight") && mode.type==="normal" && !cmd.value){
     const rows=navRows(), i=navSel();
     if (i>=0 && rows[i] && rows[i].dataset.cfg){

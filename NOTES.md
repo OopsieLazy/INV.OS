@@ -1404,3 +1404,57 @@ through the API, which is what gives the galaxy its shared-part bridges.
 - 33 UI end-to-end checks, now covering the first-run doors, the demo seed creating
   projects with shared parts, proj new/add/undo/del against the database, and the
   stale-cache guard.
+
+---
+
+# v21.3 — ORBIT MODE (from ORBIT-SPEC.md) + two bugs it exposed
+
+## Orbit mode
+`graph orbit` (aliases: orbits / planets / spin). In the galaxy and projects views the
+force layout is allowed to settle, then every node stops being simulated and starts
+revolving: parts around their project's core, projects around the central sun.
+
+Orbits are circles on individually tilted 3D planes — through the existing perspective
+camera they read as ellipses, which gives the planetary feel without the cost of real
+Kepler ellipses. `initOrbits()` captures each node's CURRENT radius and angle, so
+switching the mode on makes nothing jump; it just starts moving from where it stopped.
+Each node's tilt and direction come from a stable per-node seed, so they persist.
+
+While orbiting, `gAlpha` is pinned low and the frame returns before the force code —
+the physics and the orbits must never run in the same frame or they fight each other.
+Default OFF: it repaints continuously, so it is a show mode.
+Tuning knobs are all in `initOrbits()` (master speed, tilt, minimum radius).
+
+## Bug 1: the graph was drawing from the on-screen window
+After the P2 port the inventory graph read `state.items`, which is now only the rows
+currently displayed — so it drew almost nothing. The graph now does its OWN bounded
+fetch (`GRAPH_ITEM_CAP` = 1500 parts) and the label says when it is showing a sample.
+A force simulation over 100k nodes is neither drawable nor useful.
+
+Worse, the galaxy's part-stars looked up each BOM part in `state.items` too, so every
+star silently vanished. They now come from the BOM lines themselves, which arrive from
+the API already joined with name, bin and live stock.
+
+Also removed: `loadDemoData` still assigned the OLD hardcoded `state.projects` array
+AFTER seeding the database, overwriting the real projects with stale line objects that
+had no names. That is why every galaxy star came out unlabeled — and an unlabeled node
+crashed `gDraw3D` outright, killing the render loop. The draw now tolerates a missing
+label instead of throwing.
+
+## Bug 2 (pre-existing, and a genuinely annoying one): g and h ate your keystrokes
+With the graph open, the bare `g` and `h` hotkeys fired whenever the prompt was empty —
+so the first letter of anything starting with g or h was swallowed. You could not type
+"graph", "glue", "grinder", "help", "health" or "hinges". Typing `graph orbit` produced
+`raph orbit`, which is how it was found.
+
+This contradicts the app's own rule that typing is never punished (the same reasoning
+that kept `w`/`s` out of the way back in v5.3). They are now `alt+g` / `alt+h` from the
+prompt, and still bare when the graph pane itself has focus — which is where a
+mouseless shortcut actually belongs. `keys` updated.
+
+## Verified
+39 UI end-to-end checks (6 new for orbit): the mode toggles, orbits are captured once
+the layout settles, nodes measurably move, every orbiting node holds its radius from
+its parent (which is what makes it an orbit and not drift), it toggles off again, and
+the inventory view is left alone. The settle wait is a condition, not a sleep, so it
+does not flake on a slower machine. Three consecutive clean runs.
