@@ -54,7 +54,7 @@ func TestSearchIsUnicodeTolerant(t *testing.T) {
 		{"10kohm", "Resistor 10kΩ"},
 		{"10kΩ", "Resistor 10kΩ"},
 		{"100uf", "Capacitor 100µF"},
-		{"res 10k", "Resistor 10kΩ"}, // multi-token AND
+		{"res 10k", "Resistor 10kΩ"},   // multi-token AND
 		{"RESISTORS", "Resistor 10kΩ"}, // matches via the shelf label
 	} {
 		page, err := s.Items(ctx, ItemQuery{Search: tc.query})
@@ -325,4 +325,149 @@ func names(items []Item) []string {
 		out[i] = it.Name
 	}
 	return out
+}
+
+// Trigram indexing must not change what search finds: fragments still match anywhere
+// in the text, not just at the start of a word.
+func TestSearchMatchesMidWordFragments(t *testing.T) {
+	s := open(t)
+	add(t, s, "Resistor 10kΩ", 1110, 5, 1)
+
+	for _, frag := range []string{"sist", "ohm", "10k"} {
+		page, err := s.Items(context.Background(), ItemQuery{Search: frag})
+		if err != nil {
+			t.Fatalf("%q: %v", frag, err)
+		}
+		if page.Total != 1 {
+			t.Errorf("fragment %q matched %d rows, want 1", frag, page.Total)
+		}
+	}
+}
+
+// Fragments shorter than a trigram cannot use the index and fall back to a scan;
+// they must still return the right rows.
+func TestShortFragmentsStillMatch(t *testing.T) {
+	s := open(t)
+	add(t, s, "Nut M3", 2210, 100, 10)
+	add(t, s, "Bolt M4", 2110, 50, 10)
+
+	page, err := s.Items(context.Background(), ItemQuery{Search: "m3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || page.Rows[0].Name != "Nut M3" {
+		t.Errorf("short fragment search -> %d %v, want just Nut M3", page.Total, names(page.Rows))
+	}
+}
+
+// Approximate search stops counting at CountCap and says so, instead of walking every
+// match on each keystroke. Exact search still reports the true total.
+func TestApproxSearchCapsTheCount(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	items := make([]Item, 0, CountCap+50)
+	for i := range CountCap + 50 {
+		items = append(items, Item{Name: fmt.Sprintf("Resistor %d", i), Bin: 1110, Qty: 1})
+	}
+	if _, err := s.BulkAdd(ctx, items, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	approx, err := s.Items(ctx, ItemQuery{Search: "resistor", Limit: 8, Approx: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approx.Capped || approx.Total != CountCap {
+		t.Errorf("approx: total %d capped %v, want %d and capped", approx.Total, approx.Capped, CountCap)
+	}
+	if len(approx.Rows) != 8 {
+		t.Errorf("approx returned %d rows, want the 8 asked for", len(approx.Rows))
+	}
+
+	exact, err := s.Items(ctx, ItemQuery{Search: "resistor", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exact.Capped || exact.Total != CountCap+50 {
+		t.Errorf("exact: total %d capped %v, want %d and not capped",
+			exact.Total, exact.Capped, CountCap+50)
+	}
+}
+
+// Counters are maintained by triggers, so they must stay correct through every kind of
+// mutation — including a move, which changes which shelf an item counts toward.
+func TestShelfCountersTrackMutations(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	deptQty := func(n int) (int, int) {
+		t.Helper()
+		depts, err := s.Depts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return depts[n].Items, depts[n].Qty
+	}
+
+	it := add(t, s, "Widget", 1110, 10, 1)
+	if c, q := deptQty(1); c != 1 || q != 10 {
+		t.Fatalf("after add: %d items %d qty, want 1 and 10", c, q)
+	}
+
+	if _, err := s.AdjustQty(ctx, it.CID, +5); err != nil {
+		t.Fatal(err)
+	}
+	if c, q := deptQty(1); c != 1 || q != 15 {
+		t.Errorf("after stock: %d items %d qty, want 1 and 15", c, q)
+	}
+
+	// move it to another department: the old shelf must give the count back
+	if _, err := s.UpdateItem(ctx, it.CID, map[string]any{"bin": 5110}); err != nil {
+		t.Fatal(err)
+	}
+	if c, q := deptQty(1); c != 0 || q != 0 {
+		t.Errorf("old department after move: %d items %d qty, want 0 and 0", c, q)
+	}
+	if c, q := deptQty(5); c != 1 || q != 15 {
+		t.Errorf("new department after move: %d items %d qty, want 1 and 15", c, q)
+	}
+
+	if err := s.DeleteItem(ctx, it.CID); err != nil {
+		t.Fatal(err)
+	}
+	if c, q := deptQty(5); c != 0 || q != 0 {
+		t.Errorf("after delete: %d items %d qty, want 0 and 0", c, q)
+	}
+}
+
+// A whole spreadsheet import is one undo step, not one per row.
+func TestBulkAddUndoesAsOneStep(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	n, err := s.BulkAdd(ctx, []Item{
+		{Name: "Alpha", Bin: 1110, Qty: 1},
+		{Name: "Beta", Bin: 1120, Qty: 2},
+		{Name: "Gamma", Bin: 1130, Qty: 3},
+	}, "test.csv")
+	if err != nil || n != 3 {
+		t.Fatalf("bulk add: %d %v", n, err)
+	}
+	st, _ := s.Stats(ctx)
+	if st.Items != 3 {
+		t.Fatalf("after import: %d items, want 3", st.Items)
+	}
+	// imported rows must be searchable straight away
+	page, _ := s.Items(ctx, ItemQuery{Search: "beta"})
+	if page.Total != 1 {
+		t.Errorf("imported item not searchable: %d hits", page.Total)
+	}
+
+	if _, err := s.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = s.Stats(ctx); st.Items != 0 {
+		t.Errorf("after undoing the import: %d items, want 0", st.Items)
+	}
 }

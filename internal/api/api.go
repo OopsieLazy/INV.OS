@@ -173,6 +173,8 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 		Sort:   q.Get("sort"),
 		Desc:   q.Get("desc") == "1",
 		LowSet: q.Get("low") == "1",
+		// live search sends approx=1: top hits fast, "200+" instead of an exact total
+		Approx: q.Get("approx") == "1",
 	}
 	for _, p := range []struct {
 		key string

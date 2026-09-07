@@ -1244,3 +1244,66 @@ get CPU/GPU heavy; spatial-grid optimization noted for later if node counts grow
   title marker. Everything else (inventory, projects graph, all newer features) intact.
 - (Couldn't rewind to the literal pre-galaxy version — no saved snapshot existed — so
   this fork is derived from current code by removing galaxy, which is reliable/tested.)
+
+---
+
+# v21.0 — THE EXE (main branch): Go binary + real SQLite, HTML app forked to a demo
+
+## Repo went to git; two tracks
+- `html-demo` branch, tag `html-demo-v20.2` — the single-file HTML app, FROZEN as it
+  shipped. It becomes the free public demo (strip-down pass is D1 in the roadmap).
+- `main` — the product. One Go exe: embeds the UI, owns a real SQLite database, serves
+  itself on the LAN so shop tablets and the office PC share one inventory. The same
+  code becomes the SaaS build.
+- main no longer carries deploy/ or the two root .html copies (they live on the demo
+  branch), so the "keep three HTML files in sync" burden is gone. The exe's UI source
+  is internal/web/ui/. The old whole-blob server moved to legacy-blob-server/.
+
+## Architecture
+- internal/store — the ONLY package that touches SQL. `Store` interface + SQLite impl.
+  The SaaS Postgres backend implements the same interface; nothing above it changes.
+- internal/api — JSON REST over the Store. Optional shared token for untrusted LANs.
+- internal/web — go:embed of the UI, so the product is genuinely one file.
+- cmd/invos — the binary. cmd/invos-stress — the measurement harness.
+
+## The RAM fix (the reason for the rewrite)
+The HTML app held the entire inventory in browser memory as one JSON blob and
+re-serialized ALL of it on every single write. That is what breaks at volume. The exe
+never loads the inventory: every read is a paginated query, every write is one
+statement. Measured heap is FLAT — 0.4 MB at 10k items and 0.4 MB at 100k.
+
+## Measured, not assumed (100,000 items, this laptop)
+Three real problems showed up and were fixed against the numbers:
+
+1. Home screen 68ms. Aggregating the item table for ten department counts, on the one
+   screen the app returns to constantly. -> trigger-maintained `shelf_counts` table.
+   **68ms -> 0.0ms**, and it no longer grows with inventory size.
+2. Search 88ms per keystroke, and 814ms for a rare term (the part-number lookup — the
+   single most important operation in a real shop). -> FTS5 with the **trigram**
+   tokenizer, which indexes substrings, so "type any fragment anywhere" behavior is
+   preserved exactly rather than downgraded to prefix matching.
+   **common term 88ms -> 2ms · rare term 814ms -> 3ms**
+3. Even with the index, search stayed slow. Profiling showed the index was never the
+   cost: fetching 8 rows was already 0ms. The cost was the exact `COUNT(*)` and the
+   global `ORDER BY`, both of which visit every match. Live search shows the top 8 and
+   does not need either. -> `ItemQuery.Approx`, which stops at CountCap (200) and sorts
+   within that. Explicit actions (full result list, reports) still get exact answers.
+
+Final at 100k items: home 0.0ms · live search 2ms · 2-token search 11ms · rare term 3ms
+· open a shelf 3ms · low-stock 2ms · write 0.5ms · process RSS 16.5 MB · db 78 MB.
+
+Cost accepted for the trigram index: ~6x slower bulk seeding (100k in 32s) and ~2.4x
+disk. Worth it — the 814ms -> 3ms rare-term lookup is the operation a shop lives on.
+
+## SQLite stays; Postgres is not needed
+100k items is already far past what a shop reaches, and everything is index-bound at
+that size. Postgres enters only for SaaS multi-tenancy, which is exactly why the Store
+interface exists from day one.
+
+## Verified
+20 Go tests, including: unicode-tolerant search (10kohm finds 10kΩ), mid-word fragment
+matching, LIKE-wildcard escaping, qty clamping at zero, patch column/value pairing
+(caught a REAL bug — sorting the SQL fragments without reordering their arguments wrote
+values into the wrong columns), undo restoring a deleted item WITH its original CID,
+trigger-maintained counters staying correct across add/stock/move/delete, bulk import
+undoing as one step, and 200 concurrent takes with zero lost updates.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"runtime"
@@ -74,7 +75,44 @@ func (s *SQLite) init() error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.seed(ctx)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return s.backfill(ctx)
+}
+
+// backfill rebuilds the derived structures — the search index and the shelf counters —
+// when a database predates them. Both are maintained by triggers from then on, so this
+// runs once and costs nothing on every later start.
+func (s *SQLite) backfill(ctx context.Context) error {
+	var items, counted int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM items`).Scan(&items); err != nil {
+		return err
+	}
+	if items == 0 {
+		return nil
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(items),0) FROM shelf_counts`).Scan(&counted); err != nil {
+		return err
+	}
+	if counted == items {
+		return nil
+	}
+	slog.Info("rebuilding derived indexes", "items", items)
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM shelf_counts`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO shelf_counts(dept, digit, items, qty)
+			SELECT bin / 1000, (bin / 100) % 10, COUNT(*), SUM(qty)
+			  FROM items GROUP BY bin / 1000, (bin / 100) % 10`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO items_fts(items_fts) VALUES('rebuild')`)
+		return err
+	})
 }
 
 // DefaultDepts are the ten top-level departments, carried over from the HTML app so
@@ -183,35 +221,71 @@ func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	return it, err
 }
 
-// buildWhere turns an ItemQuery into a WHERE clause and its arguments. Search tokens
-// are AND-matched as substrings against the precomputed `norm` column — the same
-// semantics as the HTML app, so results never change under a user's feet.
-func buildWhere(q ItemQuery) (string, []any) {
-	var where []string
-	var args []any
-	if q.Bin != nil {
-		where = append(where, "bin = ?")
-		args = append(args, *q.Bin)
-	}
-	if q.Dept != nil {
-		where = append(where, "bin / 1000 = ?")
-		args = append(args, *q.Dept)
-		if q.Sec != nil {
-			where = append(where, "(bin / 100) % 10 = ?")
-			args = append(args, *q.Sec)
+// minTrigram is the shortest fragment the trigram index can match. Anything shorter
+// falls back to a LIKE scan, which is fine because it is rare and still correct.
+const minTrigram = 3
+
+// ftsQuote renders a fragment as an FTS5 string literal ("" escapes a quote).
+func ftsQuote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// buildFrom decides how the item table is reached. Search fragments of three or more
+// characters go through the trigram index; shorter ones stay as LIKE predicates, so
+// behavior is identical either way and only the speed differs.
+func buildFrom(q ItemQuery) (from string, match string, likeToks []string) {
+	for _, tok := range strings.Fields(Norm(q.Search)) {
+		if len([]rune(tok)) >= minTrigram {
+			if match != "" {
+				match += " AND "
+			}
+			match += ftsQuote(tok)
+		} else {
+			likeToks = append(likeToks, tok)
 		}
 	}
-	if q.LowSet {
-		where = append(where, "qty <= min")
+	if match == "" {
+		return " FROM items", "", likeToks
 	}
-	for _, tok := range strings.Fields(Norm(q.Search)) {
-		where = append(where, "norm LIKE ? ESCAPE '\\'")
+	return " FROM items JOIN items_fts ON items_fts.rowid = items.cid", match, likeToks
+}
+
+// buildQuery turns an ItemQuery into the FROM and WHERE halves of a statement plus
+// their arguments. Search tokens are AND-matched as substrings — the same semantics
+// as the HTML app, so results never change under a user's feet — but long fragments
+// are served by the trigram index rather than a table scan.
+func buildQuery(q ItemQuery) (from, where string, args []any) {
+	var conds []string
+
+	from, match, likeToks := buildFrom(q)
+	if match != "" {
+		conds = append(conds, "items_fts MATCH ?")
+		args = append(args, match)
+	}
+	for _, tok := range likeToks {
+		conds = append(conds, "items.norm LIKE ? ESCAPE '\\'")
 		args = append(args, "%"+escapeLike(tok)+"%")
 	}
-	if len(where) == 0 {
-		return "", nil
+	if q.Bin != nil {
+		conds = append(conds, "bin = ?")
+		args = append(args, *q.Bin)
 	}
-	return " WHERE " + strings.Join(where, " AND "), args
+	// Filter by a bin RANGE rather than by arithmetic on the column. `bin / 1000 = ?`
+	// hides the column inside an expression, so SQLite cannot use the bin index and
+	// scans the table; `bin BETWEEN lo AND hi` is an index range scan.
+	if q.Dept != nil {
+		lo, hi := *q.Dept*1000, *q.Dept*1000+999
+		if q.Sec != nil {
+			lo, hi = lo+*q.Sec*100, lo+*q.Sec*100+99
+		}
+		conds = append(conds, "bin BETWEEN ? AND ?")
+		args = append(args, lo, hi)
+	}
+	if q.LowSet {
+		conds = append(conds, "qty <= min")
+	}
+	if len(conds) == 0 {
+		return from, "", nil
+	}
+	return from, " WHERE " + strings.Join(conds, " AND "), args
 }
 
 // escapeLike neutralizes the LIKE wildcards so a search for "50%" is a literal search.
@@ -229,13 +303,7 @@ var sortCols = map[string]string{
 
 // Items returns one page of matching items plus the full match count.
 func (s *SQLite) Items(ctx context.Context, q ItemQuery) (Page[Item], error) {
-	where, args := buildWhere(q)
-
-	var page Page[Item]
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM items`+where, args...).
-		Scan(&page.Total); err != nil {
-		return page, err
-	}
+	from, where, args := buildQuery(q)
 
 	order, ok := sortCols[q.Sort]
 	if !ok {
@@ -252,9 +320,34 @@ func (s *SQLite) Items(ctx context.Context, q ItemQuery) (Page[Item], error) {
 		limit = MaxLimit
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+itemCols+` FROM items`+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`,
-		append(args, limit, q.Offset)...)
+	var page Page[Item]
+	var countSQL, rowSQL string
+	countArgs := args
+	rowArgs := append(append([]any{}, args...), limit, q.Offset)
+
+	if q.Approx {
+		// Stop after CountCap matches and sort only within that candidate set. Both the
+		// exact count and the global sort force SQLite to visit every match, which is
+		// what made a common word cost 68ms per keystroke; the user is reading the top
+		// handful of rows, so neither is worth paying for on every character typed.
+		countSQL = `SELECT COUNT(*) FROM (SELECT items.cid` + from + where + ` LIMIT ?)`
+		countArgs = append(append([]any{}, args...), CountCap+1)
+		rowSQL = `SELECT ` + itemCols + ` FROM (SELECT ` + itemCols + from + where +
+			` LIMIT ?) ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+		rowArgs = append(append([]any{}, args...), CountCap, limit, q.Offset)
+	} else {
+		countSQL = `SELECT COUNT(*)` + from + where
+		rowSQL = `SELECT ` + itemCols + from + where + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+	}
+
+	if err := s.db.QueryRowContext(ctx, countSQL, countArgs...).Scan(&page.Total); err != nil {
+		return page, err
+	}
+	if q.Approx && page.Total > CountCap {
+		page.Total, page.Capped = CountCap, true
+	}
+
+	rows, err := s.db.QueryContext(ctx, rowSQL, rowArgs...)
 	if err != nil {
 		return page, err
 	}
@@ -311,6 +404,106 @@ func (s *SQLite) AddItem(ctx context.Context, it Item) (Item, error) {
 			&it.CID, string(undo))
 	})
 	return it, err
+}
+
+// BulkAdd inserts many items under a single transaction, prepared statement, and log
+// entry. This is the import path: one 10k-row spreadsheet is one undoable action, and
+// the per-row cost drops by roughly two orders of magnitude versus looping AddItem.
+//
+// Department and section labels are looked up once and cached rather than re-queried
+// per row, which is what made the naive version quadratic-feeling on large imports.
+func (s *SQLite) BulkAdd(ctx context.Context, items []Item, source string) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UnixMilli()
+	var first, last int64
+
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		labels, err := loadLabels(ctx, tx)
+		if err != nil {
+			return err
+		}
+		ins, err := tx.PrepareContext(ctx,
+			`INSERT INTO items(name,norm,bin,qty,min,value,pkg,part,supplier,source,link,notes,created_at,updated_at)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer ins.Close()
+
+		// The CID is part of the searchable text, and SQLite hands it out only on
+		// insert. Reserving the block up front lets each row be written once instead
+		// of inserted and then updated.
+		var next int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(cid),0)+1 FROM items`).Scan(&next); err != nil {
+			return err
+		}
+		first = next
+
+		for _, it := range items {
+			it.CID = next
+			hay := Norm(strings.Join([]string{
+				it.Name, it.Value, it.Pkg, it.Part, it.Notes,
+				fmt.Sprintf("bin %d", it.Bin), CIDStr(it.CID),
+				labels[fmt.Sprintf("d%d", it.Dept())],
+				labels[fmt.Sprintf("%d%d", it.Dept(), it.Section())],
+			}, " "))
+			if _, err := ins.ExecContext(ctx, it.Name, hay, it.Bin, it.Qty, it.Min,
+				it.Value, it.Pkg, it.Part, it.Supplier, it.Source, it.Link, it.Notes,
+				now, now); err != nil {
+				return err
+			}
+			next++
+		}
+		last = next - 1
+
+		undo, _ := json.Marshal(map[string]any{"from": first, "to": last})
+		return appendLog(ctx, tx, "import",
+			fmt.Sprintf("imported %d items (%s)", len(items), source), nil, string(undo))
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(items), nil
+}
+
+// loadLabels reads every department and section label in two queries so a bulk insert
+// does not hit the database once per row just to build search text.
+func loadLabels(ctx context.Context, q queryer) (map[string]string, error) {
+	out := make(map[string]string, 48)
+
+	rows, err := q.QueryContext(ctx, `SELECT n, label FROM depts`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var n int
+		var label string
+		if err := rows.Scan(&n, &label); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[fmt.Sprintf("d%d", n)] = label
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err = q.QueryContext(ctx, `SELECT code, label FROM sections`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var code, label string
+		if err := rows.Scan(&code, &label); err != nil {
+			return nil, err
+		}
+		out[code] = label
+	}
+	return out, rows.Err()
 }
 
 // patchable lists the columns a PATCH may touch. Anything else is rejected rather
@@ -462,12 +655,13 @@ func (s *SQLite) NextFreeBin(ctx context.Context, dept, sec int) (int, error) {
 // Depts lists the ten departments with live item and piece counts, aggregated by the
 // database rather than by walking rows.
 func (s *SQLite) Depts(ctx context.Context) ([]Dept, error) {
+	// Reads the trigger-maintained counters (at most 100 rows) instead of aggregating
+	// the item table. This is what keeps the home screen instant at any inventory size.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT d.n, d.label,
-		       COALESCE(COUNT(i.cid), 0),
-		       COALESCE(SUM(i.qty), 0)
+		       COALESCE(SUM(c.items), 0), COALESCE(SUM(c.qty), 0)
 		  FROM depts d
-		  LEFT JOIN items i ON i.bin / 1000 = d.n
+		  LEFT JOIN shelf_counts c ON c.dept = d.n
 		 GROUP BY d.n, d.label
 		 ORDER BY d.n`)
 	if err != nil {
@@ -488,15 +682,16 @@ func (s *SQLite) Depts(ctx context.Context) ([]Dept, error) {
 
 // Sections lists the shelves in one department, or all of them when dept < 0.
 func (s *SQLite) Sections(ctx context.Context, dept int) ([]Section, error) {
-	q := `SELECT s.code, s.dept, s.digit, s.label, COALESCE(COUNT(i.cid), 0)
+	// Same counter table as Depts — a direct key lookup per shelf.
+	q := `SELECT s.code, s.dept, s.digit, s.label, COALESCE(c.items, 0)
 	        FROM sections s
-	        LEFT JOIN items i ON i.bin / 1000 = s.dept AND (i.bin / 100) % 10 = s.digit`
+	        LEFT JOIN shelf_counts c ON c.dept = s.dept AND c.digit = s.digit`
 	var args []any
 	if dept >= 0 {
 		q += ` WHERE s.dept = ?`
 		args = append(args, dept)
 	}
-	q += ` GROUP BY s.code, s.dept, s.digit, s.label ORDER BY s.code`
+	q += ` ORDER BY s.code`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -713,6 +908,8 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 			Delta  int   `json:"delta"`
 			Item   *Item `json:"item"`
 			Before *Item `json:"before"`
+			From   int64 `json:"from"`
+			To     int64 `json:"to"`
 		}
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return fmt.Errorf("undo payload for log %d is unreadable: %w", e.ID, err)
@@ -738,6 +935,9 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 					_, err = tx.ExecContext(ctx, `UPDATE items SET norm=? WHERE cid=?`, hay, it.CID)
 				}
 			}
+		case "import":
+			// a whole import backs out as one step, by the CID block it was given
+			_, err = tx.ExecContext(ctx, `DELETE FROM items WHERE cid BETWEEN ? AND ?`, p.From, p.To)
 		case "take", "stock":
 			_, err = tx.ExecContext(ctx,
 				`UPDATE items SET qty = MAX(0, qty - ?), updated_at = ? WHERE cid = ?`,
@@ -775,11 +975,21 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 // Stats is the home summary, computed entirely by aggregate queries.
 func (s *SQLite) Stats(ctx context.Context) (Stats, error) {
 	var st Stats
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(qty),0), COUNT(DISTINCT bin),
-		       COALESCE(SUM(CASE WHEN qty <= min THEN 1 ELSE 0 END),0)
-		  FROM items`).Scan(&st.Items, &st.Pieces, &st.Bins, &st.Low)
+	// Item and piece totals come from the counter table; only the distinct-bin count
+	// needs the item index, and the low count is served by its partial index. None of
+	// the three touches a full row.
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(items),0), COALESCE(SUM(qty),0) FROM shelf_counts`).
+		Scan(&st.Items, &st.Pieces)
 	if err != nil {
+		return st, err
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM (SELECT DISTINCT bin FROM items)`).Scan(&st.Bins); err != nil {
+		return st, err
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM items WHERE qty <= min`).Scan(&st.Low); err != nil {
 		return st, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects`).Scan(&st.Projects); err != nil {
