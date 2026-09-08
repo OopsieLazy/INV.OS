@@ -3693,7 +3693,17 @@ function recaptureOrbit(n){
 }
 
 /* stepOrbits advances every orbit one frame. The sun stays pinned at the origin. */
-function stepOrbits(dt){
+/* stepOrbits(dt, blend)
+   dt advances the orbital angle; blend is how far the node is pulled onto its orbit,
+   0 meaning "leave it where the force layout put it" and 1 meaning "on the orbit".
+
+   Ramping the SPEED from zero — which is what this used to do — meant the handoff read
+   as settle, freeze, accelerate: for about ten frames nothing moved at all, because an
+   angle that is not advancing leaves every node exactly where it was captured. Blending
+   the POSITION instead lets the layout carry on settling underneath while the orbits
+   fade in over the top, so the cluster stays alive and then takes off. */
+function stepOrbits(dt, blend){
+  if (blend === undefined) blend = 1;
   const byId = {};
   gNodes.forEach(n=>byId[n.id]=n);
   gNodes.forEach(n=>{
@@ -3704,9 +3714,11 @@ function stepOrbits(dt){
     // par + r*(u*cos + v*sin): a circle of radius r in the plane spanned by u and v,
     // which at angle 0 is exactly where the node was when the orbit was captured.
     const c=Math.cos(o.ang), sn=Math.sin(o.ang);
-    n.x = par.x + o.r*(o.ux*c + o.vx*sn);
-    n.y = par.y + o.r*(o.uy*c + o.vy*sn);
-    n.z = (par.z||0) + o.r*(o.uz*c + o.vz*sn);
+    const ox = par.x + o.r*(o.ux*c + o.vx*sn);
+    const oy = par.y + o.r*(o.uy*c + o.vy*sn);
+    const oz = (par.z||0) + o.r*(o.uz*c + o.vz*sn);
+    if (blend >= 1){ n.x=ox; n.y=oy; n.z=oz; }
+    else { n.x += (ox-n.x)*blend; n.y += (oy-n.y)*blend; n.z += (oz-n.z)*blend; }
   });
 }
 
@@ -3946,7 +3958,7 @@ function warmGraph(){
     for (let i=0;i<3;i++) gPhysics(0.5);          // repel, springs, integrate
     gView = {kind:"galaxy"};
     for (let i=0;i<2;i++) gPhysics(0.5);          // the galaxy branches too
-    initOrbits(); stepOrbits(1);                  // and the orbit maths
+    initOrbits(); stepOrbits(1, 1); stepOrbits(1, 0.5);                  // and the orbit maths
 
     gNodes = savedNodes; gEdges = savedEdges; gAlpha = savedAlpha; gView = savedView;
     gOrbitInit = false;
@@ -4014,9 +4026,12 @@ function gTick(){
       // rotate. Motion resumes the moment the pointer is released.
       const held = !!gLastXY;
       if (!held){
-        gOrbitRamp = Math.min(1, gOrbitRamp + 1/75);        // ~1.25s at 60fps
-        const t = gOrbitRamp;
-        stepOrbits(t*t*(3-2*t) * cfg("orbitSpeed"));        // smoothstep, then the user's rate
+        gOrbitRamp = Math.min(1, gOrbitRamp + 1/90);        // ~1.5s at 60fps
+        const t = gOrbitRamp*gOrbitRamp*(3-2*gOrbitRamp);   // smoothstep, gentle at both ends
+        // The layout keeps settling underneath while the orbits fade in over it, so the
+        // cluster never stops moving — it drifts, then gathers, then takes off.
+        if (t < 1) gPhysics(0.03 * (1-t));
+        stepOrbits(cfg("orbitSpeed"), t);
       }
       gAlpha = 0.001;
       if (g3d && gAutoRot && !held) gYaw += cfg("driftSpeed");

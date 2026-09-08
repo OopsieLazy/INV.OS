@@ -2276,3 +2276,40 @@ helps, but it was solving the wrong problem first.
 
 ## Verified
 108 UI checks, 36 settings checks, orbit and rewind probes unchanged.
+
+---
+
+# v24.4 — the settle-to-orbit handoff stops stalling
+
+The two-phase entrance is deliberate and worth keeping: the force layout gathers
+everything into clusters, then the orbits take over. What jarred was the seam.
+
+## What was wrong
+v23.4 eased the orbit in by ramping its SPEED from zero. But an angle that is not
+advancing leaves every node exactly where it was captured — so for about ten frames the
+entire graph was motionless. Measured:
+
+    ... 0.04 0.04 0.04 | 0.00 0.00 0.01 0.01 0.02 ...
+                         ^ initOrbits
+
+Settle, freeze, accelerate. Every position was continuous, and it still read as a glitch,
+because a graph that stops dead for a sixth of a second looks broken regardless of the
+maths.
+
+## What it does now
+`stepOrbits(dt, blend)` advances the angle at full rate from the first frame and blends
+the POSITION instead: 0 means "leave it where the force layout put it", 1 means "on the
+orbit". While the blend rises, the force simulation keeps running underneath at a
+decaying strength, so the cluster is still alive.
+
+    0.05 0.04 | 0.41 1.25 1.95 1.98 1.69 1.50 1.42 ... 1.26 1.26
+
+It drifts, gathers, accelerates past the steady rate as the nodes catch up to where their
+orbits have already turned to, then eases back onto the orbital speed. The overshoot IS
+the take-off — it comes out of the geometry rather than being animated in.
+
+## Verified
+109 UI checks. The new one is a stall guard: it watches 150 frames across the handoff and
+fails if the graph goes more than 8 consecutive frames without moving. That is the
+specific failure the old ramp had, and nothing else in the suite would have caught it —
+every position was continuous the whole time.

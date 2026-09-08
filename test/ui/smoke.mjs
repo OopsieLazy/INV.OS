@@ -348,6 +348,32 @@ async function runChecks(page, t, consoleErrors) {
   });
   check('no node teleports when orbit mode engages', jumpAtStart < 40,
     `worst single-frame jump was ${jumpAtStart.toFixed(1)} units`);
+
+  // The handoff must not STALL either. Ramping the orbit speed from zero left the whole
+  // graph motionless for about ten frames — settle, freeze, accelerate — which reads as
+  // a glitch even though every position is continuous. The layout keeps running
+  // underneath while the orbits fade in, so there should be no dead stretch.
+  const stall = await page.evaluate(async () => {
+    const snap = () => gNodes.filter(n => n.orb).map(n => [n.x, n.y, n.z || 0]);
+    let prev = snap(), still = 0, worstStill = 0;
+    for (let f = 0; f < 150; f++) {
+      await new Promise(r => requestAnimationFrame(r));
+      const now = snap();
+      let moved = 0;
+      if (now.length === prev.length) {
+        for (let i = 0; i < now.length; i++) {
+          moved += Math.hypot(now[i][0] - prev[i][0], now[i][1] - prev[i][1], now[i][2] - prev[i][2]);
+        }
+        moved /= Math.max(1, now.length);
+      }
+      if (moved < 0.005) { still++; if (still > worstStill) worstStill = still; }
+      else still = 0;
+      prev = now;
+    }
+    return worstStill;
+  });
+  check('the settle-to-orbit handoff never stalls', stall < 8,
+    `${stall} consecutive frames with no movement`);
   check('orbits were captured once the layout settled', settled,
     'gOrbitInit never became true within 8s');
 

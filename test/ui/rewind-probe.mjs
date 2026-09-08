@@ -110,7 +110,7 @@ console.log('spikes (frame, movement):', spikes.length ? spikes.slice(0, 8).map(
 const initFrame = (events.find(e => e[1] === 'initOrbits') || [])[0];
 if (initFrame) {
   const around = [];
-  for (let f = Math.max(1, initFrame - 3); f < Math.min(steps.length, initFrame + 24); f++) {
+  for (let f = Math.max(1, initFrame - 3); f < Math.min(steps.length, initFrame + 130); f += 6) {
     around.push(`f${f}:${steps[f - 1] === null ? '-' : steps[f - 1].toFixed(2)}`);
   }
   console.log('\nspeed around the orbit handoff:');
