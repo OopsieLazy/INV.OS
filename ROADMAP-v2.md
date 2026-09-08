@@ -63,10 +63,33 @@ The one tracking gap left: who has a tool / where it is right now.
 - [ ] "what's out now" view; overdue flag
 - [ ] ties into the activity log (with operator, see B2)
 
-### B2 — R4 Operator identity + attributed audit trail
-- [ ] `who <name>` sets session operator (lightweight, no auth)
-- [ ] stamp every mutation with the operator; `recent by <name>`; export column
-- [ ] groundwork for true multi-user (Phase D)
+### B2 — R4 Operator identity + attributed audit trail  ★ do this before B1 and B3
+"Who took the last one" is the single most-asked question in a shared shop, and every
+other accountability feature is downstream of it. The plumbing is already half built:
+`log.operator` EXISTS in schema.sql and is written as '' by every path today.
+
+The log is also already the undo stack and already records WHAT changed, in `text` and
+in the `undo` payload. So this is not a new subsystem — it is filling in a column and
+giving people a way to set it.
+
+- [ ] `who <name>` sets the operator for this DEVICE, remembered like a display setting.
+      A bench tablet is "bench", the office PC is whoever is at it. No password.
+- [ ] stamp every mutation: `appendLog` takes the operator, every call site passes it
+- [ ] `recent by <name>` · `recent <cid>` (this item's whole history) · operator column
+      in the log screen and in `export`
+- [ ] item detail shows "last touched by X, <time>" — the answer where the question is
+      asked, rather than making someone go and read a log
+- [ ] `who` with no argument reports who this device is set to
+- [ ] a mutation with no operator set is still recorded, marked "unattributed" — refusing
+      the write would teach people to work around the app
+
+**Be honest about what this is.** `who <name>` is ATTRIBUTION, not authentication:
+anyone can type any name. That is the right trade for a shop where nobody is trying to
+lie, and it is not good enough for anything that has to survive a dispute or an auditor.
+Real identity needs Phase D. The UI should never call it "audit" in a way that implies
+more than it delivers.
+
+Depends on nothing. B1 (custody) and the reorder history in B3 both want it first.
 
 ### B3 — R5 Suppliers, reorder points, purchase workflow  [~ -> finish]
 Fields exist (supplier/source/link); turn low-stock into ACTION.
@@ -123,6 +146,82 @@ Note: true multi-device usefulness needs Phase D.
 - [ ] lite (open-source core) vs pro (one-time) split — generate lite by stripping pro
 - [ ] "why own-once vs subscription" one-pager · docs site
 - [ ] optional turnkey: pre-imaged Raspberry Pi
+
+═══════════════════════════════════════════════════════════════
+## THE ERP QUESTION (added 2026-09-08)
+
+Raised from forum reading: most companies still run inventory on spreadsheets, and the
+alternative everyone names is an ERP. Should INV.OS grow toward one — shipping links,
+reorders, purchase orders, full logs?
+
+### The observation is right, and it is the whole opportunity
+
+People stay on spreadsheets because ERPs are the only thing above them, and an ERP is a
+project: seat licences, an implementation, a consultant, months before anyone benefits.
+A shop with 4,000 parts and six people does not clear that bar, so it stays on a
+spreadsheet it knows is wrong. **The gap is not "no software exists" — it is that the
+next rung up the ladder is three metres high.**
+
+That gap is what this product is for. Nothing here should be aimed at competing with
+NetSuite or Fishbowl on features; it should be aimed at being the rung.
+
+### But "grow into an ERP" is the wrong instinct
+
+ERP means finance, purchasing, receiving, HR and CRM sharing one ledger. Almost none of
+that is inventory, all of it is regulated or accounting-adjacent, and each piece drags in
+multi-user permissions, approval chains and an audit trail that has to hold up to an
+outside party. Chasing it would:
+
+- destroy the thing that makes this good — it opens instantly, needs no account, and one
+  person can run it. Every ERP feature is a reason to add setup;
+- start a fight with entrenched vendors who have sales teams and integrations, on their
+  ground rather than ours;
+- and the RAM rule, the single-file design and "no accounts" all become obstacles rather
+  than advantages.
+
+### The line
+
+**INV.OS owns the physical question: what is here, where is it, who has it, how much is
+left.** It integrates outward for everything else rather than absorbing it — export, an
+open API, files a person can hand to their accountant. It should be the system of record
+for STOCK, and never try to be the system of record for MONEY.
+
+Applied to the specific asks:
+
+| ask | verdict |
+|---|---|
+| **attributed logs (who did what)** | **Yes, and first.** B2. Cheap — the column exists — and everything else depends on it. |
+| **reorder points → a buy list** | **Yes, highest-value item on the board.** B3. Turns data already held into money saved, needs no new architecture, and it is the thing spreadsheet users cannot do at all. |
+| **"how to order" / supplier links** | **Yes, cheap.** `supplier`, `source` and `link` are ALREADY fields on every item. `reorder` grouping by supplier with the link beside each line is most of the value of purchasing, for none of the cost. |
+| **labels** | **Already shipped**, and the foundation for scanning (C1). Deepen rather than extend. |
+| **full logs** | **Already shipped** — the log is unbounded and IS the undo stack. B2 adds the missing "who". |
+| **valuation (qty x unit cost)** | **Yes.** A3. Cheap, and it is what year-end and an insurance claim actually need. |
+| **purchase orders with approval + receiving + three-way match** | **No.** That is real purchasing, and it is where ERP scope begins. A printable PO per supplier (B3) is the honest stopping point. |
+| **carrier shipping — rates, labels, tracking** | **No, unless the shop ships product.** That is a different product (ShipStation and friends) and a pile of carrier integrations. A maker shop CONSUMES inventory; it does not ship it. Revisit only if a real user ships. |
+| **accounting integration (QuickBooks / Xero)** | **Not now.** Export is the integration. Real sync means matching a ledger, and being wrong there costs someone their books. |
+| **multi-warehouse, lot / serial / expiry tracking** | **No.** These exist for regulated and food/pharma inventory. Adding them for one hypothetical customer taxes every screen for all the others. |
+
+### What the ladder actually looks like
+
+The sellable story is a migration path, not a feature list — each rung useful on its own:
+
+1. **Import your spreadsheet** (done). The first five minutes have to beat the thing they
+   already have.
+2. **Print labels, scan them** (labels done, C1 next). This is the step a spreadsheet can
+   never take, and it is where the app stops being a nicer spreadsheet.
+3. **Know who has what** (B2 + B1). The shared-shop pain.
+4. **Turn low stock into a buy list** (B3). The first time the app saves money instead of
+   recording it.
+5. **Tell you what it is all worth** (A3). Year-end, insurance, and the number an owner
+   actually asks for.
+
+Anything that does not sit on that ladder is a distraction until the ladder is finished.
+
+### The one thing that would change this answer
+
+If a real shop says "we cannot use it because it does not do X", X moves. This section is
+reasoning from forum posts, which is a hypothesis, not evidence. The fastest way to
+invalidate all of it is to get one shop running P9's legacy import on real data.
 
 ═══════════════════════════════════════════════════════════════
 ## RATIONALE (why this order)
@@ -220,7 +319,13 @@ data access sits behind one Store interface from day one.
 
 ### Still open from the original feature roadmap (Phases B/C above)
 Not port work — genuinely new capability, in rough value order:
+- [ ] B2 operator identity + attributed log (WHO did it) — cheapest, and everything
+      else below depends on it; `log.operator` already exists in the schema
 - [ ] B1 check-out / check-in custody (who has the tool, where is it now)
 - [ ] B3 suppliers + reorder points -> a real buy list grouped by supplier
 - [ ] C1 scanning as a MODE (scan -> take / stock / count), USB wedge scanners
 - [ ] A3 reporting: most-taken, stale stock, consumption rate, valuation
+
+See "THE ERP QUESTION" above for why the order is B2 -> C1 -> B1 -> B3 -> A3 and what is
+deliberately NOT on this list (purchase orders with approvals, carrier shipping,
+accounting sync, lot/serial tracking).
