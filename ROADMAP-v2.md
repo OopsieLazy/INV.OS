@@ -152,14 +152,22 @@ Public-facing: upload for feedback/views. No new features land here.
 Single Go binary. Embeds the UI, owns a real SQLite database, serves itself on the
 LAN so shop tablets/phones hit the same inventory. Same codebase becomes the SaaS.
 
-DONE — the port is finished; the exe is at full feature parity with the HTML build.
+DONE — the port is finished and AUDITED (v24.1 re-checked every item below against a
+test rather than trusting the checkbox; three of them were not actually done).
 - [x] P1 scaffold: go:embed UI, SQLite schema (relational, not blob), REST API   v21.0
 - [x] P2 port the UI off the in-memory JSON blob onto the API (the RAM fix)      v21.1
 - [x] P3 stress test: 100k items — RAM flat, search 2ms, home 0ms                v21.0
 - [x] P4 projects / BOM in the database                                          v21.2
-- [x] P5 cycle count · P6 spreadsheet import · P7 photos                         v22.0
-- [x] P8 galaxy + orbit as settings (deletes the no-galaxy fork)                  v22.1
-- [x] UI end-to-end test harness (test/ui/smoke.mjs) — 66 checks
+      · build made atomic (one transaction, one undo) — v24.1
+- [x] P5 cycle count                                                             v22.0
+- [x] P6 spreadsheet import                                          v22.0, tested v24.1
+- [x] P7 photos in the database                                                  v22.0
+- [x] P8 galaxy + orbit as settings; the no-galaxy fork is deleted    v22.1, done v24.1
+- [x] department / shelf renames reach the database (was memory-only)            v24.1
+- [x] graph scales to 20k nodes; grid physics + pixel rendering                  v23.0
+- [x] settings audit: everything applies live and survives a reload              v24.0-24.2
+- [x] test harness: 108 end-to-end UI checks + 36 settings checks, plus
+      benchmark / rewind / orbit / staleness / update-notice probes
 
 ★ NEXT — nothing here is a port; it is all "make it shippable".
 
