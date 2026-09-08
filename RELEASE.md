@@ -49,8 +49,13 @@ hear from you that is not a release.
 - [ ] a real capture at `docs/galaxy.png` — this is the single most valuable image here
 - [ ] repo topics: `inventory`, `inventory-management`, `selfhosted`, `sqlite`, `golang`,
       `makerspace`, `workshop`
-- [ ] LICENSE — decide this BEFORE posting. r/selfhosted asks within three comments, and
-      "I haven't decided" reads as "this might be taken away".
+- [x] LICENSE — **AGPL-3.0**, verbatim from gnu.org. Free for every shop; if someone runs
+      a modified version as a service they must publish their changes. That is the
+      standard choice when the SaaS is the business, and this audience recognises it.
+- [ ] **replace `sourceURL` in cmd/invos/main.go** with the real repo address before
+      cutting a release. AGPL §13 requires network users be offered the source, and
+      `invos -version`, `/api/server` and the app's `license` command all print it —
+      shipping `REPLACE-ME` would be a compliance failure, not a typo.
 - [ ] `MANUAL.md`, `NOTES.md`, `ROADMAP-v2.md` linked from the README
 - [ ] a real "About" one-liner on the repo
 

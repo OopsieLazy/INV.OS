@@ -335,6 +335,12 @@ type ServerInfo struct {
 	StartedAt int64    `json:"startedAt"`
 	// CanToggleLAN says whether the app may switch shop access on and off itself.
 	CanToggleLAN bool `json:"canToggleLan"`
+	// License and Source travel with the server because AGPL section 13 requires that
+	// anyone interacting with it OVER A NETWORK be offered the source — and a tablet on
+	// the shop wifi is exactly that. A note on a website they may never see is not an
+	// offer; a line in the app they are using is.
+	License string `json:"license"`
+	Source  string `json:"source"`
 }
 
 // Info is filled in by main() at startup; the UI reads it for the `server` screen.

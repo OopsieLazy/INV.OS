@@ -122,6 +122,18 @@ cd test/ui && node smoke.mjs          # end-to-end: real binary, real browser, r
 The end-to-end suite launches the actual binary, drives the actual terminal in headless
 Chromium, then reads the server back to prove the typing reached SQLite.
 
+## Licence
+
+**AGPL-3.0.** Use it, read it, change it, run it in your shop — free, forever, and your
+data is a file you own either way.
+
+The one condition: if you run a *modified* version somewhere other people can reach it,
+you have to offer them your changes too. That keeps the thing that gets published useful
+to everybody, and it is why the source is here rather than just the binaries.
+
+No warranty, to the extent the law allows. See [LICENSE](LICENSE), or type `license` in
+the app.
+
 ## Status
 
 Working and used, not yet 1.0. [NOTES.md](NOTES.md) is the changelog — it records what was

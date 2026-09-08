@@ -31,6 +31,15 @@ import (
 // version is stamped at build time: -ldflags "-X main.version=1.2.3"
 var version = "dev"
 
+/*
+AGPL-3.0. sourceURL is not decoration: section 13 requires that anyone who interacts
+
+	with this program over a network be offered its source, and a shop tablet on the LAN is
+	exactly that. So the address has to travel WITH the binary rather than living on a
+	website somebody might not find — `invos -version` prints it, and the app shows it.
+*/
+const sourceURL = "https://github.com/REPLACE-ME/invos"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "invos: "+err.Error())
@@ -54,6 +63,8 @@ func run() error {
 
 	if *showVer {
 		fmt.Println("invos " + version)
+		fmt.Println("AGPL-3.0 — free software, and it comes with NO WARRANTY.")
+		fmt.Println("source: " + sourceURL)
 		return nil
 	}
 
@@ -79,6 +90,7 @@ func run() error {
 	// the flags decided is handed to the API layer rather than guessed at there.
 	api.Info = api.ServerInfo{
 		Version: version, Build: web.BuildID(), Port: *port, StartedAt: time.Now().UnixMilli(),
+		License: "AGPL-3.0", Source: sourceURL,
 	}
 
 	// The station's own listener is always loopback and always up, so toggling shop
