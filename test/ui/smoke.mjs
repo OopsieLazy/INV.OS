@@ -867,6 +867,61 @@ async function runChecks(page, t, consoleErrors) {
   check('the whole import undoes in one step', importUndone === beforeImport,
     `items ${importUndone}, expected back to ${beforeImport}`);
 
+  // ── who did it ────────────────────────────────────────────────────────────
+  // "Who took the last one" is the most-asked question in a shared shop, and everything
+  // downstream of accountability depends on the answer being recorded.
+  console.log(String.fromCharCode(10) + 'attributed log');
+
+  await t.run('who');
+  check('with nobody set, it says so rather than pretending', /nobody is set/i.test(await t.screen()),
+    (await t.screen()).slice(-200));
+
+  await t.run('who Dave');
+  check('setting the operator is confirmed', /station is now Dave/i.test(await t.screen()),
+    (await t.screen()).slice(-200));
+
+  await t.run('add Attributed Widget @4130 x7');
+  await page.waitForTimeout(500);
+  const logDave = await api.get('/api/log?limit=20');
+  const daveRow = logDave.rows.find(r => /Attributed Widget/i.test(r.text));
+  check('the change is stamped with who made it',
+    !!daveRow && daveRow.operator === 'Dave', JSON.stringify(daveRow || null));
+
+  await t.run('who Sam');
+  await t.run('add Second Widget @4131 x2');
+  await page.waitForTimeout(500);
+
+  // Filtering happens in the DATABASE: "Dave's last 200" is a different and correct
+  // answer to "the last 200 rows, of which some are Dave's".
+  const byDave = await api.get('/api/log?by=Dave&limit=50');
+  check('the log can be filtered to one person',
+    byDave.rows.length > 0 && byDave.rows.every(r => r.operator === 'Dave'),
+    JSON.stringify(byDave.rows.map(r => r.operator)));
+  check('the filtered count matches the filter',
+    byDave.total === byDave.rows.length, `total ${byDave.total} vs ${byDave.rows.length} rows`);
+
+  await t.run('recent by Dave');
+  // Look at the RECENT ACTIVITY block only — the screen still holds the scrollback where
+  // Sam's widget was added, and matching against that tests nothing.
+  const full = await t.screen();
+  const block = full.slice(full.lastIndexOf('RECENT ACTIVITY'));
+  check('recent by <name> shows only that person', /by Dave/i.test(block) &&
+    /Attributed Widget/i.test(block) && !/Second Widget/i.test(block), block.slice(0, 400));
+
+  // A name is a claim typed by a person, so it must not be able to forge a log line.
+  await t.run('who -');
+  check('the operator can be cleared', /unattributed/i.test(await t.screen()),
+    (await t.screen()).slice(-160));
+  await t.run('add Anon Widget @4132 x1');
+  await page.waitForTimeout(400);
+  const anon = (await api.get('/api/log?limit=10')).rows.find(r => /Anon Widget/i.test(r.text));
+  // `operator` is omitempty, so an unattributed row carries no field at all rather than
+  // an empty string — which is the right wire shape, and what the UI renders as "—".
+  check('an unattributed change is still recorded',
+    !!anon && !anon.operator, JSON.stringify(anon || null));
+
+  await t.run('who Dave');
+
   // ── legacy import (the v20.2 HTML build) ──────────────────────────────────
   // The migration path off the old app. What matters is not that rows arrive but that
   // the C-IDs arrive UNCHANGED: the labels are already stuck on the drawers.

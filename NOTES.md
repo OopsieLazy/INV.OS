@@ -2671,3 +2671,47 @@ There were no width media queries at all. Now:
 
 Verified: 119 UI checks, 53 settings-audit checks, **20 new security checks**, 11
 load/layout checks, 26 store tests.
+
+## v25.6 — B2: who did it
+
+"Who took the last one" is the most-asked question in a shared shop, and every
+accountability feature is downstream of it. `log.operator` already existed in schema.sql
+and every path wrote '' into it, so this was mostly filling in a column.
+
+### The operator rides in the context
+
+Nineteen call sites write to the log. Threading a name through all of them — and through
+every `Store` method signature — would be a large change touching everything and meaning
+nothing to most of it. The context already reaches every one of them, because every one
+already takes a `ctx`. So: `store.WithOperator(ctx, name)` at the edge, `OperatorFrom(ctx)`
+inside `appendLog`, and not one mutation signature changed.
+
+The API reads `X-INVOS-Operator` in a middleware placed innermost in the chain: a request
+that is going to be refused for any other reason should be refused before this runs, and
+nothing about it is a security decision.
+
+### It is attribution, not authentication, and the wording says so
+
+Anyone can type any name. That is the right trade for a shop where nobody is trying to
+lie, and it is nowhere near enough for a dispute or an auditor. `who` says
+"anyone can type any name — it answers who took the last one, not more" rather than
+implying an audit trail it cannot deliver. Real identity is Phase D.
+
+Names are cleaned before storage: trimmed, capped at 40 characters, and control characters
+STRIPPED rather than escaped. A newline in a name is how one log line is made to look like
+two, and a name has no legitimate use for one. `TestOperatorCannotForgeALogLine` guards it.
+
+### Filtering happens in the database
+
+`recent by <name>` sends `by=` to the server rather than filtering the fetched page.
+Filtering client-side would quietly mean "the last 200 rows, of which some are Dave's"
+instead of "Dave's last 200" — a different, wrong answer. The count matches the filter for
+the same reason. `cid=` gives one item's whole history.
+
+A change made with nobody set is still recorded, unattributed. Refusing the write would
+teach people to work around the app, which is worse than an unattributed row. The `recent`
+screen only pads a WHO column when there is something in it, so a single-operator shop
+does not read a column of dashes — and says once that `who` exists.
+
+Verified: 5 new store tests, 7 new end-to-end UI checks — 127 UI checks, 53 settings,
+20 security, 31 store tests.

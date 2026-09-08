@@ -1093,24 +1093,49 @@ func appendLog(ctx context.Context, tx *sql.Tx, op, text string, cid *int64, und
 	if undo != "" {
 		u = undo
 	}
+	// Who is doing this rides in the context, so every one of the call sites below gets
+	// it without being changed. Empty means nobody said, which is recorded as-is rather
+	// than guessed at.
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO log(ts,op,text,cid,undo) VALUES(?,?,?,?,?)`,
-		time.Now().UnixMilli(), op, text, cid, u)
+		`INSERT INTO log(ts,op,text,cid,operator,undo) VALUES(?,?,?,?,?,?)`,
+		time.Now().UnixMilli(), op, text, cid, OperatorFrom(ctx), u)
 	return err
 }
 
-// Log returns one page of activity, newest first.
-func (s *SQLite) Log(ctx context.Context, limit, offset int) (Page[LogEntry], error) {
+// Log returns one page of activity, newest first, optionally narrowed to one person or
+// one item. The count matches the filter — a page saying "12 of 4000" when you asked for
+// one person's changes would be answering a question nobody asked.
+func (s *SQLite) Log(ctx context.Context, q LogQuery) (Page[LogEntry], error) {
 	var page Page[LogEntry]
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM log`).Scan(&page.Total); err != nil {
+
+	where, args := "", []any{}
+	if op := CleanOperator(q.Operator); op != "" {
+		// Matched case-insensitively: people type their own name inconsistently, and
+		// "recent by dave" finding nothing because they once typed "Dave" is a bug to
+		// the person using it.
+		where += " AND operator = ? COLLATE NOCASE"
+		args = append(args, op)
+	}
+	if q.CID != nil {
+		where += " AND cid = ?"
+		args = append(args, *q.CID)
+	}
+	if where != "" {
+		where = " WHERE 1=1" + where
+	}
+
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM log`+where, args...).
+		Scan(&page.Total); err != nil {
 		return page, err
 	}
+	limit, offset := q.Limit, q.Offset
 	if limit <= 0 || limit > MaxLimit {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, ts, op, text, cid, operator, undo IS NOT NULL, undone
-		   FROM log ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+		   FROM log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(append([]any{}, args...), limit, offset)...)
 	if err != nil {
 		return page, err
 	}

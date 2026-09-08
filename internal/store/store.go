@@ -6,7 +6,10 @@
 // single caller changing. Do not leak *sql.DB, driver types, or SQL strings past here.
 package store
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Item is one physical thing in the shop. CID is permanent and never reused.
 type Item struct {
@@ -208,7 +211,7 @@ type Store interface {
 	SharedParts(ctx context.Context) ([]SharedPart, error)
 
 	// history
-	Log(ctx context.Context, limit, offset int) (Page[LogEntry], error)
+	Log(ctx context.Context, q LogQuery) (Page[LogEntry], error)
 	Undo(ctx context.Context) (LogEntry, error)
 
 	// build
@@ -243,4 +246,66 @@ type Store interface {
 	Meta(ctx context.Context, key string) (string, error)
 	SetMeta(ctx context.Context, key, value string) error
 	Close() error
+}
+
+// ── who did it ──────────────────────────────────────────────────────────────
+
+/* The operator travels in the context rather than as an argument to every mutation.
+
+   Nineteen call sites write to the log, and threading a name through all of them — and
+   through every Store method signature above — would be a large change that touches
+   everything and means nothing to most of it. The context already reaches every one of
+   them, because every one of them already takes a ctx.
+
+   This is ATTRIBUTION, not authentication. Anyone can claim any name; the point is that
+   a shop can answer "who took the last one", not that the answer stands up in court.
+   Real identity needs accounts, which is Phase D. */
+type operatorKey struct{}
+
+// WithOperator returns a context carrying the name that mutations will be logged under.
+func WithOperator(ctx context.Context, name string) context.Context {
+	name = CleanOperator(name)
+	if name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, operatorKey{}, name)
+}
+
+// OperatorFrom reports who the current context is acting as, or "" when nobody said.
+func OperatorFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(operatorKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// MaxOperator bounds the stored name. A log line is read on a narrow screen, and the
+// value arrives in an HTTP header from whatever is on the shop's network.
+const MaxOperator = 40
+
+// CleanOperator makes a name safe to store and to print. Control characters are stripped
+// rather than escaped: they have no legitimate use in a person's name and they are how a
+// log line gets forged to look like a different one.
+func CleanOperator(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+		if b.Len() >= MaxOperator {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// LogQuery filters the activity log. Zero value = the whole log, newest first.
+type LogQuery struct {
+	// Operator narrows to one person; CID to one item's whole history.
+	Operator string
+	CID      *int64
+	Limit    int
+	Offset   int
 }

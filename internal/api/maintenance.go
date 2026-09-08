@@ -270,7 +270,7 @@ func (s *Server) exportAll(w http.ResponseWriter, r *http.Request) {
 		out = append(out, projectOut{Project: p, Bom: lines})
 	}
 
-	logPage, _ := s.st.Log(ctx, store.MaxLimit, 0)
+	logPage, _ := s.st.Log(ctx, store.LogQuery{Limit: store.MaxLimit})
 
 	w.Header().Set("Content-Disposition", `attachment; filename="invos-export.json"`)
 	writeJSON(w, http.StatusOK, map[string]any{

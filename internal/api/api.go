@@ -85,7 +85,7 @@ func (s *Server) Handler() http.Handler {
 	/* Order matters. Rate limiting is outermost so a flood is dropped before it costs
 	   anything; then the same-origin check, then the token, then the app. Security
 	   headers wrap the lot so even a refusal carries them. */
-	return s.secure(s.logging(s.rateLimit(s.sameOrigin(s.auth(mux)))))
+	return s.secure(s.logging(s.rateLimit(s.sameOrigin(s.auth(s.operator(mux))))))
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -96,6 +96,21 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			!tokenOK(s.Token, r.Header.Get("X-INVOS-Token")) {
 			writeErr(w, http.StatusUnauthorized, errors.New("bad or missing token"))
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+/* operator puts the caller's claimed name into the context, where appendLog picks it up
+   without every mutation having to pass it along.
+
+   Innermost in the chain on purpose: a request that is going to be refused for any other
+   reason should be refused before this bothers to run, and nothing here is a security
+   decision. The name is a claim, not a credential — see store.WithOperator. */
+func (s *Server) operator(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if who := r.Header.Get("X-INVOS-Operator"); who != "" {
+			r = r.WithContext(store.WithOperator(r.Context(), who))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -647,7 +662,12 @@ func (s *Server) listLog(w http.ResponseWriter, r *http.Request) {
 	if v, err := intParam(r, "offset"); err == nil && v != nil {
 		offset = *v
 	}
-	page, err := s.st.Log(r.Context(), limit, offset)
+	q := store.LogQuery{Limit: limit, Offset: offset, Operator: r.URL.Query().Get("by")}
+	if v, err := intParam(r, "cid"); err == nil && v != nil {
+		cid := int64(*v)
+		q.CID = &cid
+	}
+	page, err := s.st.Log(r.Context(), q)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

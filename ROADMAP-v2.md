@@ -72,16 +72,17 @@ The log is also already the undo stack and already records WHAT changed, in `tex
 in the `undo` payload. So this is not a new subsystem — it is filling in a column and
 giving people a way to set it.
 
-- [ ] `who <name>` sets the operator for this DEVICE, remembered like a display setting.
-      A bench tablet is "bench", the office PC is whoever is at it. No password.
-- [ ] stamp every mutation: `appendLog` takes the operator, every call site passes it
-- [ ] `recent by <name>` · `recent <cid>` (this item's whole history) · operator column
-      in the log screen and in `export`
+- [x] `who <name>` sets the operator for this DEVICE, remembered like a display setting.
+      A bench tablet is "bench", the office PC is whoever is at it. No password.      v25.6
+- [x] stamp every mutation — the operator rides in the CONTEXT, not through nineteen
+      call sites and every Store signature. One change at appendLog, one at the edge.
+- [x] `recent by <name>` (filtered in the DATABASE, not in the page) · `cid` filter for
+      one item's whole history · operator column in the log screen and in `export`
 - [ ] item detail shows "last touched by X, <time>" — the answer where the question is
       asked, rather than making someone go and read a log
-- [ ] `who` with no argument reports who this device is set to
-- [ ] a mutation with no operator set is still recorded, marked "unattributed" — refusing
-      the write would teach people to work around the app
+- [x] `who` with no argument reports who this device is set to; `who -` clears it
+- [x] a mutation with no operator set is still recorded, unattributed — refusing the
+      write would teach people to work around the app
 
 **Be honest about what this is.** `who <name>` is ATTRIBUTION, not authentication:
 anyone can type any name. That is the right trade for a shop where nobody is trying to

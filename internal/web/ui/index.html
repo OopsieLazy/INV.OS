@@ -468,6 +468,10 @@ const DB = {
   base: "",
   async req(method, path, body){
     const opt = {method, headers:{}};
+    /* Who is at this station. The server puts it on every log row, so a shop can answer
+       "who took the last one". It is a claim, not a credential — nobody is authenticated
+       — which is exactly why it is a plain header and not a session. */
+    if (state.operator) opt.headers["X-INVOS-Operator"] = state.operator;
     if (body !== undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
     const r = await fetch(this.base + path, opt);
     if (r.status === 204) return null;
@@ -519,7 +523,12 @@ const DB = {
   setDept(n,label){ return this.put("/api/depts/"+n,{label}); },
   setSection(code,label){ return this.put("/api/sections/"+code,{label}); },
   stats(){ return this.get("/api/stats"); },
-  log(limit){ return this.get("/api/log?limit="+(limit||20)); },
+  log(limit, opts){
+    const q = new URLSearchParams({limit: String(limit||20)});
+    if (opts && opts.by) q.set("by", opts.by);
+    if (opts && opts.cid) q.set("cid", String(opts.cid));
+    return this.get("/api/log?"+q.toString());
+  },
   undo(){ return this.post("/api/undo"); },
   meta(k){ return this.get("/api/meta/"+encodeURIComponent(k)); },
   setMeta(k,value){ return this.put("/api/meta/"+encodeURIComponent(k), {value}); },
@@ -1416,6 +1425,7 @@ const MENU = [
   {k:"tidy",   d:"clean up item names",              run:"tidy"},
   {k:"doctor", d:"find duplicates & messy entries",  run:"doctor"},
   {k:"recent", d:"activity log",                     run:"recent"},
+  {k:"who",    d:"who is at this station (logged with every change)", fill:"who "},
   {k:"undo",   d:"reverse the last change",          run:"undo"},
   {k:"export", d:"CSV · export xlsx / full / report / photos", run:"export"},
   {k:"export xlsx",d:"full inventory to Excel (.xlsx)", run:"export full"},
@@ -1811,7 +1821,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -3367,24 +3377,59 @@ async function exec(line){
 
     case "undo": case "u": await doUndo(); return;
 
+    /* `who` says who is at this station. It is stored per DEVICE, like a theme: the
+       bench tablet is "bench", the office PC is whoever sits there. There is no password
+       and no login — this is ATTRIBUTION, not authentication, and the wording below says
+       so rather than implying an audit trail it cannot deliver. */
+    case "who": case "iam": {
+      const name = rest.trim();
+      if (!name){
+        if (state.operator){
+          print(`this station is ${state.operator}.`,"g");
+          print("  change it: who <name>   ·  clear it: who -","d");
+        } else {
+          print("nobody is set at this station — changes are logged as unattributed.","a");
+          print("  set it: who <your name>","d");
+        }
+        return;
+      }
+      if (name === "-" || name.toLowerCase() === "nobody"){
+        state.operator = ""; await save();
+        print("cleared. changes from this station are logged as unattributed.","d");
+        return;
+      }
+      state.operator = name.slice(0,40);
+      await save();
+      print(`this station is now ${state.operator}.`,"g");
+      print("  every change made here is logged under that name.","d");
+      print("  anyone can type any name — it answers who took the last one, not more.","d");
+      return;
+    }
+
     case "recent": case "log": {
       const p2=x=>String(x).padStart(2,"0");
       const stamp=l=>{ const d=new Date(l.ts);
         return `${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
       if (rest.toLowerCase()==="export"){
         const logRows=(await DB.log(1000)).rows.slice().reverse();
-        const csv=["time,action"].concat(logRows.map(l=>
-          `${new Date(l.ts).toISOString()},${'"'+l.text.replace(/"/g,'""')+'"'}`)).join("\n");
+        const q=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
+        const csv=["time,who,action"].concat(logRows.map(l=>
+          `${new Date(l.ts).toISOString()},${q(l.operator)},${q(l.text)}`)).join("\n");
         print("ACTIVITY LOG CSV:","w");
         print("─".repeat(46),"d"); print(csv,"g"); print("─".repeat(46),"d");
         try{ await navigator.clipboard.writeText(csv); print("(copied to clipboard)","d"); }catch(e){}
         return;
       }
-      let L=[];
-      try { L=(await DB.log(200)).rows.slice().reverse(); }
+      let L=[], label="", opts=null;
+      /* `recent by <name>` filters in the DATABASE, not in the page. Filtering a fetched
+         page would silently mean "the last 200 rows, of which some are Dave's" rather
+         than "Dave's last 200", which is a different and wrong answer. */
+      const byM = rest.match(/^by\s+(.+)$/i);
+      if (byM){ opts={by: byM[1].trim()}; label=` — by ${byM[1].trim()}`; }
+      try { L=(await DB.log(200, opts)).rows.slice().reverse(); }
       catch(e){ print("could not read the activity log: "+e.message,"a"); return; }
-      let label="";
-      if (rest.toLowerCase()==="today"){
+      if (byM){ /* already filtered by the server */ }
+      else if (rest.toLowerCase()==="today"){
         const mid=new Date(); mid.setHours(0,0,0,0);
         L=L.filter(l=>l.ts>=mid.getTime()); label=" — today";
       } else if (rest){
@@ -3394,8 +3439,15 @@ async function exec(line){
       L=L.slice(-30).reverse();
       if (!L.length){ print("no matching activity.","d"); return; }
       print("RECENT ACTIVITY"+label+"  (newest first)","w");
-      L.forEach(l=>print(`  ${stamp(l)}  ${l.text}`, l.text.startsWith("undid")?"a":"g"));
-      print("filter: recent take · recent today · recent <name> · recent export · undo reverses","d");
+      // Only pad a WHO column when there is something in it, so a single-operator shop
+      // does not read a column of blanks.
+      const anyWho = L.some(l=>l.operator);
+      L.forEach(l=>{
+        const who = anyWho ? "  " + (l.operator || "—").slice(0,12).padEnd(12) : "";
+        print(`  ${stamp(l)}${who}  ${l.text}`, l.text.startsWith("undid")?"a":"g");
+      });
+      print("filter: recent take · recent today · recent by <name> · recent export · undo reverses","d");
+      if (!anyWho) print("  nobody is set here — `who <name>` records who makes changes.","d");
       return;
     }
 
