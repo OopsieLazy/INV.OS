@@ -1,4 +1,54 @@
 # INV.OS — Roadmap v2  (restructured by build priority)
+
+═══════════════════════════════════════════════════════════════
+## WHERE WE ARE  (updated 2026-09-08 · v25.9)
+═══════════════════════════════════════════════════════════════
+
+This file has grown a lot. Read THIS block; everything below is detail.
+
+### The product works. It is not published.
+
+Nothing in the build is blocking a release. What is missing is the launch itself.
+
+**The port is finished and audited** — P1-P8. One Go binary, embeds the UI, owns a real
+SQLite database, serves the LAN. Full feature parity with the old HTML app, everything
+writes to the database, nothing gated. 100k items: search 2ms, home 0ms, flat memory.
+
+**Since the port:**
+
+| | |
+|---|---|
+| P9 legacy import | **done** v25.3 — move a shop off the old HTML build, C-IDs kept |
+| P10 packaging | **all but signing** v25.4 — versioned cross-builds, rewritten kiosk scripts |
+| B2 who did what | **done** v25.6 — `who`, attributed log, `recent by <name>` |
+| security pass | **done** v25.5 — https for shop access, CSRF, rate limiting, headers |
+| mobile / tablet | **done** v25.5 — stacks below 760px, real touch targets |
+| load speed | **done** v25.5 — 288KB → 95KB, usable in ~300ms |
+| onboarding | **done** v25.8 — `tutorial`, a six-step guided tour |
+| the demo | **done** v25.9 — GENERATED from the product, not a forked branch |
+| licence | **done** — AGPL-3.0 |
+| MANUAL / README / RELEASE | **written** |
+
+### What is actually next, in order
+
+1. **Publish the demo.** RELEASE.md is the checklist. The only real work left is the
+   landing page, a galaxy screenshot, and replacing `sourceURL` with the real repo.
+   Everything in this roadmap about what shops need is a hypothesis until a stranger
+   uses it.
+2. **C1 scanning as a MODE** — the step a spreadsheet cannot take, and the most
+   persuasive thing to film.
+3. **B1 custody** — "who has the tool" is the most relatable feature to describe.
+4. **B3 reorder → buy list** — the first time the app saves money instead of recording it.
+5. **A3 valuation** — needs a real `cost` column; it is the number an owner asks for.
+
+**Not next:** P11 (LAN hardening) and P12 (SaaS) are real but nobody is waiting on them.
+P10's Windows signing is blocked on buying a certificate, not on work.
+
+### The open question this cannot answer
+
+The plan above is reasoned from forum posts. One shop running the legacy import on real
+data outranks all of it — which is why publishing the demo is item 1 and not item 6.
+
 Supersedes ROADMAP.md (kept for history). Local-first, offline, keyboard-first
 inventory terminal + optional server/DB. This version orders work by dependency,
 effort, and impact — "what to tackle first," not just a feature list.
@@ -63,7 +113,7 @@ The one tracking gap left: who has a tool / where it is right now.
 - [ ] "what's out now" view; overdue flag
 - [ ] ties into the activity log (with operator, see B2)
 
-### B2 — R4 Operator identity + attributed audit trail  ★ do this before B1 and B3
+### B2 — R4 Operator identity + attributed audit trail  [x] DONE v25.6
 "Who took the last one" is the single most-asked question in a shared shop, and every
 other accountability feature is downstream of it. The plumbing is already half built:
 `log.operator` EXISTS in schema.sql and is written as '' by every path today.
@@ -107,8 +157,10 @@ Fields exist (supplier/source/link); turn low-stock into ACTION.
 - [ ] continuous scan loop; external USB/BT scanner (keyboard-wedge) support
 - [ ] scan-to-count + scan-to-checkout (needs B1/R2)
 
-### C2 — R10b Mobility
-- [ ] responsive/touch layout (bigger targets, on-screen quick actions)
+### C2 — R10b Mobility  [~ layout done v25.5, screens not]
+- [x] responsive/touch layout (bigger targets, on-screen quick actions)          v25.5
+      Graph stacks below 760px, 34px touch targets, 16px input so iOS does not zoom,
+      safe-area insets. A real 46px sideways scroll on phones was found and fixed.
 - [ ] phone quick-count / quick-take screens
 - [ ] camera-first add on mobile (pairs R1)
 Note: true multi-device usefulness needs Phase D.
@@ -149,6 +201,70 @@ Note: true multi-device usefulness needs Phase D.
 - [ ] lite (open-source core) vs pro (one-time) split — generate lite by stripping pro
 - [ ] "why own-once vs subscription" one-pager · docs site
 - [ ] optional turnkey: pre-imaged Raspberry Pi
+
+═══════════════════════════════════════════════════════════════
+## FINDING AND STORING PARTS (added 2026-09-08)
+═══════════════════════════════════════════════════════════════
+
+Asked: can storage and finding be improved. They are the two things the product exists to
+do, so yes — but the useful answer separates cheap wins from architecture.
+
+### Where finding is already strong
+
+Search is FTS5 with the **trigram** tokenizer, so any fragment matches anywhere — type
+`sist` and find resistors. Fragments under 3 characters fall back to LIKE. It searches
+name, value, package, part number, notes, bin and C-ID together, and `Norm()` folds Ω→ohm
+and µ→u so people find things they cannot type. At 100k items it answers in 2ms.
+
+The gap is not speed. It is the searches that return NOTHING.
+
+### F1 — rescue a failed search  ★ cheapest real win
+Today a miss says "no matches — add it". That is a dead end at the exact moment the person
+most needs help, and the most likely cause is a typo or a word choice, not an absence.
+- [ ] on zero results, retry loosely and offer **"did you mean"**: same trigram index,
+      lower the bar (any two of the query's fragments), rank by overlap
+- [ ] if the query has several words, retry with each on its own — "10k resistor" failing
+      when the item is called "Resistor 10kΩ 1/4W" is a fixable disappointment
+- [ ] show the nearest few by name distance before offering to add
+No schema change. This is the single highest value-per-hour item on this page.
+
+### F2 — the shop's own words
+Every shop calls things something. "Cap" is a capacitor to one person and a bottle cap to
+another; nobody wants to type "socket head cap screw".
+- [ ] an `alias` field on an item, folded into the search haystack like the others
+- [ ] `also <cid> <word>` to add one in a second, from the row that just failed to match
+- [ ] optional shop-wide synonyms in meta (`cap = capacitor`), applied at query time
+This is how a search stops being a text match and starts being *this shop's* index.
+
+### F3 — where should this go?
+`add` picks the next free bin in a department. It does not use what the shop already knows.
+- [ ] suggest a bin from where SIMILAR items already live — a new resistor belongs with
+      the resistors, and the trigram index can already tell you that
+- [ ] `where <thing>` — answer the physical question directly: department, shelf, drawer,
+      and what else is in there
+- [ ] `bins free [dept]` — where is there room
+
+### S1 — one part, two places  ★ the real storage limitation
+An item has ONE bin. Real shops have overflow: the working stock in the drawer and a box
+of 500 on the high shelf. Today that is two items with the same name, which quietly breaks
+low-stock, the BOM, and every count.
+- [ ] a `locations` table: (cid, bin, qty), one row per physical place
+- [ ] `bin` on the item becomes the PRIMARY location, so nothing above it changes at first
+- [ ] `move <cid> <bin> <qty>` splits; `take` draws from the primary and says where else
+      to look when it runs out
+This is the one item here that is genuinely architectural: it touches the item shape, the
+shelf counts, the graph and every screen that says "the bin". Worth it, but not before the
+demo teaches us whether shops actually ask for it.
+
+### S2 — the drawer is full
+- [ ] optional capacity per bin, and a warning when filing into a full one
+- [ ] `map` shows fill, so a reorganisation has somewhere to start
+
+### Recommended order
+**F1, then F3's `where`, then F2.** All three are small, none touch the schema except an
+alias column, and together they change search from "a text match" into "it knows my shop".
+**S1 waits for evidence** — it is the right answer to a question no real user has asked us
+yet.
 
 ═══════════════════════════════════════════════════════════════
 ## THE ERP QUESTION (added 2026-09-08)
