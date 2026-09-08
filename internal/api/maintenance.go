@@ -342,7 +342,17 @@ var Info ServerInfo
 
 func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 	info := Info
-	info.DBPath = s.st.Path()
+
+	/* The database path is for the person sitting at the station — `db` tells them
+	   which file to back up. It is not for the shop's tablets: a full path carries the
+	   operator's username and the machine's layout, and any device on the wifi could
+	   ask for it. Remote callers get the file name only, which is all a remote screen
+	   ever displays anyway. */
+	if isLocal(r) {
+		info.DBPath = s.st.Path()
+	} else {
+		info.DBPath = filepath.Base(s.st.Path())
+	}
 	if st, err := s.st.Stats(r.Context()); err == nil {
 		info.DBBytes = st.DBBytes
 	}

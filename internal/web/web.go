@@ -5,11 +5,15 @@
 package web
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"io/fs"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 //go:embed ui
@@ -23,7 +27,76 @@ func Handler() http.Handler {
 		// means the binary itself is malformed.
 		panic("embedded ui missing: " + err.Error())
 	}
-	return noCache(http.FileServer(http.FS(sub)))
+	return noCache(gzipped(http.FileServer(http.FS(sub))))
+}
+
+/*
+The UI is one 288KB HTML file and it compresses to about a fifth of that. Over
+
+	loopback nobody would notice, but shop access means a tablet pulling it across wifi,
+	and that is where a quarter of a megabyte per page load is felt.
+
+	It is compressed ONCE, at startup, rather than per request: the file never changes
+	during a run, so re-compressing it for every device would be work done repeatedly to
+	produce a byte-identical answer. Anything not pre-compressed here — icons, the
+	manifest — falls through to the normal handler untouched.
+*/
+var precompressed = buildPrecompressed()
+
+func buildPrecompressed() map[string][]byte {
+	out := map[string][]byte{}
+	for _, name := range []string{"ui/index.html", "ui/manifest.webmanifest"} {
+		raw, err := files.ReadFile(name)
+		if err != nil {
+			continue
+		}
+		var buf bytes.Buffer
+		zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		if err != nil {
+			continue
+		}
+		if _, err := zw.Write(raw); err != nil || zw.Close() != nil {
+			continue
+		}
+		// Only keep it if it actually helped; a compressed copy that is bigger than the
+		// original is worse than none.
+		if buf.Len() < len(raw) {
+			out[strings.TrimPrefix(name, "ui")] = buf.Bytes()
+		}
+	}
+	return out
+}
+
+func gzipped(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/" {
+			path = "/index.html"
+		}
+		body, ok := precompressed[path]
+		if !ok || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Encoding", "gzip")
+		// Without this a proxy or a browser cache could hand the compressed bytes to a
+		// client that said it could not read them.
+		h.Add("Vary", "Accept-Encoding")
+		h.Set("Content-Type", contentType(path))
+		h.Set("Content-Length", strconv.Itoa(len(body)))
+		if r.Method == http.MethodHead {
+			return
+		}
+		w.Write(body)
+	})
+}
+
+func contentType(path string) string {
+	if strings.HasSuffix(path, ".webmanifest") {
+		return "application/manifest+json"
+	}
+	return "text/html; charset=utf-8"
 }
 
 // noCache wraps the UI handler so the browser always revalidates against this process.

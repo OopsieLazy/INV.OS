@@ -2584,3 +2584,90 @@ a buyer does not find out from SmartScreen instead.
 
 Verified: 118 UI checks, 53 settings-audit checks (2 new for the zoom), 26 store tests,
 and all four cross-builds produced.
+
+## v25.5 — security, metadata, load speed, and a layout that works on a phone
+
+### Secrets
+
+Audited first, and the headline is that there was no leak: the API token has never been
+sent to the page — the UI only ever learns *whether* one is set. Two real findings:
+
+- The token was compared with `!=`, which returns as soon as two bytes differ. That
+  difference is measurable over a network and is enough to recover a token one character
+  at a time. It is `subtle.ConstantTimeCompare` now.
+- `/api/server` sent the full database path to **any** caller, including a tablet on the
+  shop wifi — and a full path carries the operator's username and the machine's layout.
+  Local callers still get the real path (`db` has to be able to tell you what to back up);
+  remote callers get the file name, which is all a remote screen ever showed.
+
+### HTTPS
+
+Shop access is now encrypted by default; localhost stays plain http, because it never
+touches a wire and a certificate warning on the station's own screen every morning would
+teach the shop to click through certificate warnings.
+
+No certificate authority will vouch for "the box on the bench at 192.168.1.40", so the
+station signs its own and keeps it beside the database. Each device warns once. That is
+worth it: without encryption every quantity, part number and — if one is set — the token
+crosses the air in plain text where anything already on that network can read or alter it.
+The certificate covers localhost, the hostname and every LAN address, is regenerated when
+it nears expiry or the station's address changes, and the key is written 0600.
+
+### The rest of the hardening
+
+- **Cross-site writes are refused.** A page on another site cannot read our replies — no
+  CORS headers — but it could still SEND: a tab left open on any site could POST to
+  `http://192.168.1.40:8137/api/items` and change the shop's stock without ever seeing the
+  response. Checked via `Sec-Fetch-Site`, with `Origin` as the fallback for older
+  browsers. Cross-site GETs are deliberately left alone: none of ours change anything.
+- **Rate limiting**, a token bucket per address, 240 burst and 40/s refill. Loose on
+  purpose — live search and paging make real bursts, and a limit that interrupts real work
+  is worse than none. Measured: a 600-request flood gets 245 served and 355 refused, and
+  it recovers. Proxy headers are NOT trusted for the client address, since honouring a
+  caller-chosen `X-Forwarded-For` would let anyone opt out of the limit.
+- **Security headers** on every response including refusals: a strict CSP (the UI has no
+  CDN, no external font and no `eval`, so `connect-src 'self'`, `object-src 'none'`,
+  `form-action 'none'` and `frame-ancestors 'none'` all hold), nosniff, DENY framing,
+  no-referrer, a Permissions-Policy that allows the camera and nothing else, and HSTS
+  **only** over TLS — sending it on plain http is meaningless and on a LAN hostname would
+  poison every other service on that host for a year.
+
+### Metadata
+
+The page had a title and a viewport and nothing else. It now has a description, Open
+Graph and Twitter cards, `robots: noindex, nofollow, noarchive` (it is a shop's private
+inventory), and `format-detection` off so phones stop turning bin numbers like 1403 into
+tappable phone numbers. `maximum-scale=1, user-scalable=no` is **gone**: pinch-zoom is how
+someone reads a bin number in bad light, and taking it away is an accessibility failure,
+not a kiosk feature. `viewport-fit=cover` plus safe-area insets for notched phones.
+
+### Load speed
+
+Measured with a new `perf-probe.mjs` against a 5,000-item database:
+
+| | |
+|---|---|
+| TTFB | 3ms |
+| first paint | 0-440ms |
+| usable (can type) | ~300ms |
+| third-party requests | zero, and asserted |
+
+The one real find: the 288KB UI was served **uncompressed**. It is pre-compressed once at
+startup — not per request, since it cannot change during a run — and is now **95KB**, a
+67% saving that only matters on the wifi link a tablet uses, which is exactly the case.
+
+### Mobile and tablet
+
+There were no width media queries at all. Now:
+
+- Below 760px the graph **stacks above** the terminal instead of taking a 46% side panel
+  that is unreadable on a 7" screen.
+- Coarse-pointer devices get 34px buttons (~44px with spacing) and taller tap rows.
+- The command input is 16px on touch, because iOS zooms the whole page when a focused
+  input is smaller and that zoom never fully undoes.
+- **Fixed a real bug the probe caught**: the page scrolled sideways 46px on a phone. The
+  probe names the offending element rather than guessing — it was the button row pushing
+  the page wide. It scrolls within the bar now.
+
+Verified: 119 UI checks, 53 settings-audit checks, **20 new security checks**, 11
+load/layout checks, 26 store tests.

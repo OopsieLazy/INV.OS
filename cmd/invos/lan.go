@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,6 +27,11 @@ type lanSwitch struct {
 	port    int
 	handler http.Handler
 	srv     *http.Server // nil when shop access is off
+
+	// tlsCfg, when set, encrypts shop access. Loopback is left on plain HTTP: it never
+	// touches a wire, and a certificate warning on the station's own screen every
+	// morning would teach the shop to click through certificate warnings.
+	tlsCfg *tls.Config
 }
 
 func newLANSwitch(port int, handler http.Handler) *lanSwitch {
@@ -56,6 +62,9 @@ func (l *lanSwitch) Enable() error {
 		IdleTimeout:       2 * time.Minute,
 	}
 	l.srv = srv
+	if l.tlsCfg != nil {
+		ln = tls.NewListener(ln, l.tlsCfg)
+	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Debug("shop listener stopped", "err", err)
@@ -87,5 +96,5 @@ func (l *lanSwitch) URLs() []string {
 	if !l.Enabled() {
 		return nil
 	}
-	return lanURLs(true, l.port)
+	return lanURLs(true, l.port, l.tlsCfg != nil)
 }

@@ -11,6 +11,7 @@
 // Exit code is non-zero if any check fails, so CI can gate on it.
 
 import { chromium } from 'playwright-core';
+import { request as httpsRequest } from 'node:https';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -651,9 +652,24 @@ async function runChecks(page, t, consoleErrors) {
   check('the advertised address is a real LAN address, not link-local',
     shopUrls.every(u => !/\/\/169\.254\./.test(u)), JSON.stringify(shopUrls));
 
+  // Shop access is encrypted. Localhost stays plain http — it never touches a wire —
+  // but anything a tablet connects to must not be carrying the inventory in the clear.
+  check('shop access is offered over https, not plain http',
+    shopUrls.every(u => u.startsWith('https://')), JSON.stringify(shopUrls));
+
   // the real proof: reach it on the LAN address, not loopback
   if (shopUrls.length) {
-    const viaLan = await fetch(shopUrls[0] + '/api/health').then(r => r.ok).catch(() => false);
+    // The certificate is self-signed by design — no authority will vouch for a box on a
+    // bench — so verification is disabled HERE, in the test, rather than in the product.
+    const viaLan = await new Promise(res => {
+      const u = new URL(shopUrls[0] + '/api/health');
+      const req = httpsRequest({
+        hostname: u.hostname, port: u.port, path: u.pathname,
+        rejectUnauthorized: false,
+      }, r => { r.resume(); res(r.statusCode === 200); });
+      req.on('error', () => res(false));
+      req.end();
+    });
     check('the station answers on its network address', viaLan, shopUrls[0]);
   }
   check('the local connection still works while shop access is on',

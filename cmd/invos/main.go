@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -47,6 +48,7 @@ func run() error {
 		window  = flag.Bool("window", true, "open as a desktop app window (false = a normal browser tab)")
 		verbose = flag.Bool("v", false, "verbose request logging")
 		showVer = flag.Bool("version", false, "print version and exit")
+		useTLS  = flag.Bool("tls", true, "encrypt shop access with a self-signed certificate (localhost stays plain http)")
 	)
 	flag.Parse()
 
@@ -100,6 +102,30 @@ func run() error {
 	// -lan just decides whether it starts open.
 	shop := newLANSwitch(*port, httpSrv.Handler)
 	srv.LAN = shop
+
+	/* Shop access is encrypted by default. Nothing off this machine should be able to
+	   read the inventory — or an API token — off the air, and a station on a shop
+	   network is exactly the sort of thing that ends up sharing that network with a
+	   guest laptop nobody vetted.
+
+	   No certificate authority will vouch for a box on a bench, so the station signs
+	   its own and keeps it beside the database. Each device warns once; after someone
+	   accepts it, the connection is real encryption. -tls=false opts out. */
+	if *useTLS {
+		hosts := certHosts(lanIPs())
+		certPath, keyPath, err := ensureCert(filepath.Dir(*dbPath), hosts)
+		if err != nil {
+			return fmt.Errorf("could not prepare the shop certificate: %w", err)
+		}
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return fmt.Errorf("could not load the shop certificate: %w", err)
+		}
+		shop.tlsCfg = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+	}
 	if *lan {
 		if err := shop.Enable(); err != nil {
 			return err
@@ -107,7 +133,7 @@ func run() error {
 	}
 
 	local := fmt.Sprintf("http://localhost:%d", *port)
-	banner(*dbPath, local, shop.Enabled(), *port, *token != "")
+	banner(*dbPath, local, shop.Enabled(), *port, *token != "", shop.tlsCfg != nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -137,16 +163,25 @@ func run() error {
 	return httpSrv.Shutdown(ctx)
 }
 
-func banner(db, local string, lan bool, port int, tokened bool) {
+func banner(db, local string, lan bool, port int, tokened, secure bool) {
 	fmt.Println("  INV.OS " + version)
 	fmt.Println("  database  " + db)
 	fmt.Println("  local     " + local)
 	if !lan {
 		fmt.Println("  shop      off — turn it on in the app, or start with -lan")
 	}
+	scheme := "http"
+	if secure {
+		scheme = "https"
+	}
 	if lan {
 		for _, ip := range lanIPs() {
-			fmt.Printf("  shop      http://%s:%d\n", ip, port)
+			fmt.Printf("  shop      %s://%s:%d\n", scheme, ip, port)
+		}
+		if secure {
+			fmt.Println("  tls       on — self-signed, so each device warns once")
+		} else {
+			fmt.Println("  tls       OFF — inventory crosses this network in the clear")
 		}
 		if tokened {
 			fmt.Println("  auth      token required (X-INVOS-Token)")
@@ -159,13 +194,17 @@ func banner(db, local string, lan bool, port int, tokened bool) {
 
 // lanURLs renders the addresses a phone on the same network can open, or nothing when
 // the station is bound to localhost only.
-func lanURLs(lan bool, port int) []string {
+func lanURLs(lan bool, port int, secure bool) []string {
 	if !lan {
 		return nil
 	}
+	scheme := "http"
+	if secure {
+		scheme = "https"
+	}
 	var out []string
 	for _, ip := range lanIPs() {
-		out = append(out, fmt.Sprintf("http://%s:%d", ip, port))
+		out = append(out, fmt.Sprintf("%s://%s:%d", scheme, ip, port))
 	}
 	return out
 }

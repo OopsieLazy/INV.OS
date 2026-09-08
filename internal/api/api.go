@@ -26,6 +26,9 @@ type Server struct {
 	// for LAN deployments where the shop network is not trusted; it is not an account
 	// system and is deliberately not one.
 	Token string
+
+	// lim is the per-client rate limiter, created on first use by rateLimit.
+	lim *limiter
 	// LAN, when set, lets the app open and close shop-wide access while running.
 	LAN LANControl
 }
@@ -79,7 +82,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("/", s.ui)
 
-	return s.logging(s.auth(mux))
+	/* Order matters. Rate limiting is outermost so a flood is dropped before it costs
+	   anything; then the same-origin check, then the token, then the app. Security
+	   headers wrap the lot so even a refusal carries them. */
+	return s.secure(s.logging(s.rateLimit(s.sameOrigin(s.auth(mux)))))
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -87,7 +93,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.Token != "" && strings.HasPrefix(r.URL.Path, "/api/") &&
-			r.Header.Get("X-INVOS-Token") != s.Token {
+			!tokenOK(s.Token, r.Header.Get("X-INVOS-Token")) {
 			writeErr(w, http.StatusUnauthorized, errors.New("bad or missing token"))
 			return
 		}

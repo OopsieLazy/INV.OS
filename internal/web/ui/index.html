@@ -2,12 +2,33 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>INV.OS</title>
+<!-- viewport-fit=cover so the layout can reach under a phone's notch; the safe-area
+     insets below keep the terminal out from under it. user-scalable is NOT disabled:
+     pinch-zoom is how someone reads a bin number in bad light, and taking it away is an
+     accessibility failure, not a kiosk feature. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>INV.OS — workshop inventory terminal</title>
+<meta name="description" content="A keyboard-first inventory terminal for a workshop. Every part, every bin, every project — on one machine, in one file, with no account and no internet.">
+<meta name="application-name" content="INV.OS">
+<meta name="author" content="INV.OS">
+<meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0c0c0c">
+<!-- This is a shop's private inventory. If it is ever reachable from outside, it should
+     still never be indexed or archived. -->
+<meta name="robots" content="noindex, nofollow, noarchive, noimageindex">
+<!-- Phone browsers otherwise turn bin numbers like 1403 into tappable phone numbers. -->
+<meta name="format-detection" content="telephone=no, date=no, address=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="INV.OS">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="INV.OS">
+<meta property="og:title" content="INV.OS — workshop inventory terminal">
+<meta property="og:description" content="Every part, every bin, every project. One file, no account, no internet.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="INV.OS — workshop inventory terminal">
+<meta name="twitter:description" content="Every part, every bin, every project. One file, no account, no internet.">
 <link rel="manifest" href="manifest.webmanifest">
 <style>
   :root{
@@ -198,6 +219,58 @@
   #cmd{
     flex:1; width:100%; border:none; outline:none; font:inherit; padding:0;
     background:transparent; color:var(--green); caret-color:var(--green);
+  }
+
+  /* ── tablets and phones ──────────────────────────────────────────────────
+     The station is a desktop terminal first, and on a bench tablet it stays one — but
+     a 46% side-by-side split is unreadable on a 7" screen, and a 22px button is below
+     every touch-target guideline there is. These do not change the desktop layout. */
+
+  /* Anything driven by a finger rather than a mouse, whatever the screen size. */
+  @media (hover: none) and (pointer: coarse){
+    .warnpill,.barbtn{
+      height:34px; padding:0 14px; font-size:13px;   /* ~44px with the row's spacing */
+    }
+    #bar{ padding:8px 14px; font-size:13px }
+    #barr{ gap:10px }
+    /* A tap on a row is a click on a line of text; give it somewhere to land. */
+    .line.idx{ min-height:2.2em; padding:2px 0 }
+    /* iOS zooms the whole page when a focused input is under 16px. That zoom then
+       never fully undoes, and the terminal ends up permanently offset. */
+    #cmd{ font-size:16px }
+  }
+
+  /* Narrow: stack the graph above the terminal instead of beside it. Side by side,
+     both halves are too narrow to be worth having. */
+  @media (max-width: 760px){
+    #main{ flex-direction:column }
+    body.g-split #graphpane{
+      width:auto; height:42vh; flex-shrink:0;
+      border-left:none; border-bottom:1px solid #1e1e1e;
+    }
+    #term{ padding:10px 12px 10px }
+    /* The button row is wider than a phone and was pushing the whole PAGE sideways —
+       the classic not-mobile-friendly symptom. Let the bar scroll within itself
+       instead: the buttons stay reachable and the page stops moving. */
+    #bar{ overflow-x:auto; -webkit-overflow-scrolling:touch }
+    #bar::-webkit-scrollbar{ height:0 }
+    #barl{ flex-shrink:0 }
+    #barr{ flex-shrink:0 }
+    /* Flex items refuse to shrink below their content unless told to; without this the
+       terminal's long pre-formatted lines widen the page rather than scrolling inside it. */
+    #main, #term{ min-width:0 }
+    /* Safe-area insets: with viewport-fit=cover the page runs under the notch and the
+       home indicator, and the command line is the thing that must never be under them. */
+    #promptrow{ padding-bottom:env(safe-area-inset-bottom, 0) }
+    #term{ padding-left:max(12px, env(safe-area-inset-left));
+           padding-right:max(12px, env(safe-area-inset-right)) }
+    #bar{ padding-top:max(6px, env(safe-area-inset-top)) }
+  }
+
+  /* Short and wide — a tablet held in landscape. Keep the split, drop the chrome. */
+  @media (max-height: 500px) and (orientation: landscape){
+    #bar{ padding:3px 14px }
+    #term{ padding-top:8px }
   }
 </style>
 </head>

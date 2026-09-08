@@ -22,6 +22,7 @@ invos.exe -db shop.db -port 9000 -token secret -open=false
 | `-port <n>` | port to listen on (default 8137) |
 | `-lan` | listen on the whole network, not just this machine — prints the URLs to type |
 | `-token <s>` | require this token on API calls; for a LAN you do not fully trust |
+| `-tls=false` | turn off encryption for shop access (it is **on** by default) |
 | `-open=false` | do not open a window on start (for a shop box that boots headless) |
 | `-window=false` | open as a normal browser tab instead of an app window |
 | `-version` | print the version and exit |
@@ -176,8 +177,33 @@ on and off **while it is running** — no restart.
 With it on, any device on the same wifi opens the URL it prints and sees the same
 inventory, live. It is one database; two people editing are editing the same rows.
 
+**Shop access is encrypted.** The station generates its own certificate and serves the
+shop over `https://`. Localhost stays plain `http://` — it never touches a wire, and a
+certificate warning on the station's own screen every morning would only teach people to
+click through certificate warnings.
+
+No certificate authority will vouch for a box on a bench, so the certificate is
+self-signed: **each device warns once**, someone taps through, and after that the traffic
+is genuinely encrypted. Without it, every quantity, part number and token crosses the air
+in plain text where anything already on that network can read it. `-tls=false` opts out.
+
 For a network you do not trust, start with `-token secret` and callers must present it.
 This is deliberately not an account system — it is a shop, not a bank.
+
+### What protects the station
+
+| | |
+|---|---|
+| encrypted shop access | on by default, self-signed, localhost excepted |
+| the token is never sent to the page | the app only ever learns *whether* one is set |
+| your file paths stay on this machine | remote devices see `invos.db`, not the full path |
+| cross-site writes are refused | a tab open on another site cannot change your stock |
+| the page cannot be framed | no clickjacking |
+| a strict content-security-policy | no external anything, and nothing can phone home |
+| rate limiting | a flood — or a device stuck in a retry loop — cannot take the station down |
+
+None of it is optional or hidden behind a flag. A rule that is only on when you remember
+to switch it on is a rule that is off.
 
 ---
 
@@ -266,7 +292,10 @@ clear.
 Honesty is more useful than a feature list:
 
 - **No accounts or permissions yet.** Anyone who can reach the address can edit. The token
-  is a door lock, not a user system.
+  is a door lock, not a user system, and it does not tell two people apart.
+- **The certificate is self-signed.** It encrypts, but it cannot prove the box is the box —
+  a device already on your network could in principle impersonate the station. Fixing that
+  properly needs a certificate authority a shop does not have.
 - **No check-out / custody yet** — you cannot record who took a tool and has not returned it.
 - **No supplier or reorder workflow yet** — no buy list grouped by supplier.
 - **Scanning is a command, not a mode** — no continuous scan loop or USB wedge support yet.
