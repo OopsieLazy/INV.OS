@@ -1836,7 +1836,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip","license","about","source",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip","license","about","source","feedback","bug",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -2765,6 +2765,30 @@ async function exec(line){
       }
       print("");
       print("  your data is yours regardless — `db` shows the file, `export` takes it out.","d");
+      return;
+    }
+
+    /* Feedback exists so the demo can do the one job it is published for: tell us what
+       is wrong. It is DEMO ONLY on purpose — the product's whole claim is that it does
+       not phone home, and a feedback button in the exe would be the first crack in that.
+       In the product it says so rather than pretending the command does not exist. */
+    case "feedback": case "bug": {
+      if (!window.__invosDemo){
+        print("this build does not send anything anywhere — that is the point of it.","d");
+        print("  the demo has a feedback command; for this one, the repo issues page is best.","d");
+        return;
+      }
+      const note = rest.trim();
+      const url = (window.__invosFeedbackURL || "");
+      print("TELL US WHAT IS WRONG","w");
+      print("  What did you try to do, and what happened instead?","d");
+      print("");
+      if (note){
+        try { await navigator.clipboard.writeText(note); print("  copied your note to the clipboard.","g"); }
+        catch(e){ /* clipboard blocked; the text is still on screen */ }
+      }
+      if (url){ print("  open:  "+url,"c"); }
+      print("  Blunt is more useful than polite. 'I could not find X' is the best kind.","d");
       return;
     }
 
@@ -6154,7 +6178,24 @@ load().then(async ()=>{
   // Warm the graph's sample now rather than when the pane opens, so switching to it
   // does not have to wait — and so it never has to build twice.
   ensureGraphItems();
-  if (state.firstRun && !state.shopName){
+  /* The demo is a different first run. A stranger who lands on a public URL has not
+     decided to set up a shop — they are deciding whether to keep reading. So: say what
+     this is in two lines, say the limit plainly rather than hiding it, and start the
+     tour, because a blinking cursor with no instructions is a closed tab. */
+  const demo = window.__invosDemoInfo;
+  if (demo && demo.firstRun()){
+    demo.markSeen();
+    updateBadge();
+    home();
+    print("");
+    print("INV.OS — live demo","w");
+    print("  This is the real app, running entirely in this browser tab. Nothing is sent","d");
+    print("  anywhere, and your changes stay in this browser.","d");
+    print(`  The demo holds ${demo.cap} items; the downloadable version has no limit.`,"d");
+    print("  `license` · `feedback` tells us what is wrong.","d");
+    tutorialStart();
+    cmd.focus();
+  } else if (state.firstRun && !state.shopName){
     updateBadge(); firstRun(); cmd.focus();
   } else { updateBadge(); home(); cmd.focus(); }
   await restoreBackupHandle();

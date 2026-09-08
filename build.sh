@@ -16,6 +16,18 @@ export PATH="$PATH:/c/Program Files/Go/bin"
 # `git describe` gives 25.3 on a tagged commit and 25.3-4-gabc1234 four commits later, so
 # a binary always says how far past a release it is rather than claiming to BE one.
 VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+
+# AGPL section 13: a network user must be offered the source, so the address ships INSIDE
+# the binary. Refusing to build with the placeholder is the only reliable way to be sure a
+# release never goes out claiming its source lives at REPLACE-ME.
+SOURCE_URL="${INVOS_SOURCE_URL:-https://github.com/REPLACE-ME/invos}"
+if [[ "$SOURCE_URL" == *REPLACE-ME* ]]; then
+  echo "!! INVOS_SOURCE_URL is not set."
+  echo "   AGPL-3.0 requires the binary to tell network users where its source is."
+  echo "   Set it and build again:"
+  echo "     INVOS_SOURCE_URL=https://github.com/<you>/invos ./build.sh"
+  exit 1
+fi
 OUT=dist
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -26,7 +38,7 @@ build() {
   local name="invos-$VERSION-$os-$arch$ext"
   echo "    $os/$arch"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    go build -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+    go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.sourceURL=$SOURCE_URL" \
     -o "$OUT/$name" ./cmd/invos
 }
 
@@ -43,5 +55,6 @@ echo
 ls -lh "$OUT" | sed 's/^/    /'
 echo
 echo "==> $OUT/  ($VERSION)"
+echo "    source (AGPL s13): $SOURCE_URL"
 echo "    Windows binaries are UNSIGNED — SmartScreen will warn on first run."
 echo "    Signing needs a code-signing certificate; see ROADMAP-v2.md P10."

@@ -19,7 +19,17 @@
   'use strict';
 
   var KEY = 'invos-demo-v1';
-  var CAP = 150; // the demo's item limit; see reply() for how it is enforced
+  /* The cap is a GUARDRAIL, not a paywall.
+   *
+   * Its job is to stop someone pasting ten thousand rows into localStorage and blaming
+   * the app when the browser complains — not to make the demo annoying enough to buy.
+   * The reason to buy is that the real one is yours and runs on your machine, which is
+   * an argument that survives a sceptical reader; "we crippled the demo" is not.
+   *
+   * So: generous. The seed is ~140 items and the cap is 500, which leaves room to play
+   * for as long as anyone wants to and still keeps the stored blob around 150KB, well
+   * inside every browser's limit. */
+  var CAP = 500;
 
   var DEFAULT_DEPTS = [
     'GENERAL / CONSUMABLES', 'ELECTRICAL / ELECTRONICS', 'FASTENERS / FITTINGS',
@@ -128,47 +138,160 @@
      so a machinist and an electronics person both see something familiar. */
   function seed() {
     for (var i = 0; i < DEFAULT_DEPTS.length; i++) db.depts[i] = DEFAULT_DEPTS[i];
+    /* Ten departments, every one populated. A demo that only fills the electronics
+       shelves shows a machinist somebody else's shop — and the shelf map and the graph
+       both look thin, which is exactly the wrong first impression for the two screens
+       people are most likely to screenshot. */
     var sections = {
-      '11': 'RESISTORS', '12': 'CAPACITORS', '13': 'SEMICONDUCTORS', '15': 'MODULES',
-      '21': 'SCREWS', '22': 'NUTS / WASHERS', '31': 'STOCK / BAR', '32': 'CUTTING TOOLS',
-      '41': 'SHEET GOODS', '42': 'HARDWOOD', '51': 'FILAMENT', '91': 'HAND TOOLS',
-      '92': 'POWER TOOLS',
+      '01': 'ADHESIVES / TAPE', '02': 'ABRASIVES', '03': 'SAFETY',
+      '11': 'RESISTORS', '12': 'CAPACITORS', '13': 'SEMICONDUCTORS',
+      '14': 'CONNECTORS', '15': 'MODULES', '16': 'WIRE / CABLE',
+      '21': 'SCREWS', '22': 'NUTS / WASHERS', '23': 'RIVETS / INSERTS',
+      '31': 'STOCK / BAR', '32': 'CUTTING TOOLS', '33': 'WELDING',
+      '41': 'SHEET GOODS', '42': 'HARDWOOD', '43': 'JOINERY',
+      '51': 'FILAMENT', '52': 'PRINTER SPARES',
+      '61': 'RESIN', '62': 'MOULDING',
+      '71': 'LEATHER', '72': 'THREAD / HARDWARE',
+      '81': 'PAINT', '82': 'FINISHES',
+      '91': 'HAND TOOLS', '92': 'POWER TOOLS', '93': 'MEASURING',
     };
     for (var k in sections) db.sections[k] = sections[k];
 
+    // name, bin, qty, min, value, package, part, notes
     var rows = [
+      ['Super glue 20g', 101, 14, 5, 'cyanoacrylate', 'bottle', '', 'goes off once opened'],
+      ['Epoxy 5-minute', 102, 6, 2, '2-part', 'syringe', '', ''],
+      ['Masking tape 24mm', 103, 22, 8, '24mm x 50m', 'roll', '', ''],
+      ['Kapton tape 10mm', 104, 9, 3, '10mm x 33m', 'roll', '', 'print bed'],
+      ['Double-sided tape', 105, 7, 3, '19mm', 'roll', '', ''],
+      ['Sandpaper 120g', 201, 40, 15, '120 grit', 'sheet', '', ''],
+      ['Sandpaper 240g', 202, 35, 15, '240 grit', 'sheet', '', ''],
+      ['Sanding block', 203, 4, 2, '', '', '', ''],
+      ['Nitrile gloves L', 301, 180, 50, 'large', 'box of 100', '', ''],
+      ['Safety glasses', 302, 8, 4, 'clear', '', '', ''],
+      ['Dust mask P2', 303, 25, 10, 'P2', 'box', '', 'for the sander'],
+
       ['Resistor 10k', 1101, 180, 50, '10k 1/4W', 'THT', '', 'pull-ups; loose in bag'],
-      ['Resistor 220R', 1102, 95, 40, '220R 1/4W', 'THT', '', 'LED current limiting'],
-      ['Resistor 4k7', 1103, 60, 30, '4.7k 1/4W', 'THT', '', ''],
+      ['Resistor 1k', 1102, 210, 60, '1k 1/4W', 'THT', '', ''],
+      ['Resistor 220R', 1103, 95, 40, '220R 1/4W', 'THT', '', 'LED current limiting'],
+      ['Resistor 4k7', 1104, 60, 30, '4.7k 1/4W', 'THT', '', ''],
+      ['Resistor 100k', 1105, 75, 30, '100k 1/4W', 'THT', '', ''],
+      ['Resistor 0.1R shunt', 1106, 12, 6, '0.1R 3W', 'THT', '', 'current sense'],
       ['Capacitor 100uF', 1201, 42, 15, '100uF 25V', 'electrolytic', '', 'watch polarity'],
-      ['Capacitor 0.1uF', 1202, 160, 60, '100nF 50V', '0805 SMD', '', 'decoupling reel cut'],
+      ['Capacitor 470uF', 1202, 18, 8, '470uF 35V', 'electrolytic', '', ''],
+      ['Capacitor 0.1uF', 1203, 160, 60, '100nF 50V', '0805 SMD', '', 'decoupling reel cut'],
+      ['Capacitor 22pF', 1204, 90, 40, '22pF', '0603 SMD', '', 'crystal load'],
       ['Diode 1N4148', 1301, 200, 50, '', 'DO-35', '1N4148', ''],
-      ['MOSFET IRLZ44N', 1302, 12, 6, '55V 47A', 'TO-220', 'IRLZ44N', 'logic level'],
+      ['Diode 1N5819', 1302, 60, 25, 'schottky 1A', 'DO-41', '1N5819', ''],
+      ['MOSFET IRLZ44N', 1303, 12, 6, '55V 47A', 'TO-220', 'IRLZ44N', 'logic level'],
+      ['Regulator LM2596', 1304, 9, 4, 'buck 3A', 'module', 'LM2596', ''],
+      ['Op-amp LM358', 1305, 24, 10, 'dual', 'DIP-8', 'LM358', ''],
+      ['LED 5mm red', 1306, 140, 50, '5mm', 'THT', '', ''],
+      ['LED 5mm green', 1307, 120, 50, '5mm', 'THT', '', ''],
+      ['JST-XH 2pin', 1401, 40, 15, '2.54mm', 'connector', '', ''],
+      ['JST-XH 4pin', 1402, 30, 12, '2.54mm', 'connector', '', ''],
+      ['Dupont header 40p', 1403, 25, 10, '2.54mm', 'strip', '', 'snap to length'],
+      ['Screw terminal 2p', 1404, 35, 15, '5.08mm', 'block', '', ''],
+      ['USB-C breakout', 1405, 8, 3, '', 'module', '', ''],
       ['ESP32 DevKit', 1501, 6, 2, 'WROOM-32', 'dev board', '', 'wifi + BLE'],
       ['Arduino Uno R3', 1502, 3, 2, '', 'dev board', '', ''],
-      ['OLED 128x64', 1503, 4, 2, 'SSD1306', 'I2C', '', ''],
-      ['Level shifter 4ch', 1504, 8, 3, '', 'module', '', ''],
-      ['Jumper wires M-M', 1505, 120, 40, '20cm', 'ribbon', '', ''],
-      ['Breadboard 830pt', 1506, 5, 2, '', 'full size', '', ''],
+      ['Raspberry Pi Pico', 1503, 5, 2, 'RP2040', 'dev board', '', ''],
+      ['OLED 128x64', 1504, 4, 2, 'SSD1306', 'I2C', '', ''],
+      ['Level shifter 4ch', 1505, 8, 3, '', 'module', '', ''],
+      ['HC-SR04 ultrasonic', 1506, 6, 3, '', 'module', '', ''],
+      ['DHT22 temp/humidity', 1507, 4, 2, '', 'module', '', ''],
+      ['SDS011 dust sensor', 1508, 2, 1, 'PM2.5/PM10', 'module', '', 'the good one'],
+      ['INA219 current sensor', 1509, 3, 2, 'I2C', 'module', '', ''],
+      ['Relay module 4ch', 1510, 3, 1, '5V', 'module', '', ''],
+      ['Breadboard 830pt', 1511, 5, 2, '', 'full size', '', ''],
+      ['Jumper wires M-M', 1601, 120, 40, '20cm', 'ribbon', '', ''],
+      ['Jumper wires M-F', 1602, 90, 40, '20cm', 'ribbon', '', ''],
+      ['Hook-up wire 22AWG', 1603, 14, 5, '22AWG', 'reel', '', 'black/red/blue'],
+      ['Mains flex 3-core', 1604, 6, 2, '0.75mm2', 'metre', '', ''],
+      ['Heatshrink assorted', 1605, 3, 1, '', 'box', '', ''],
+
       ['M3x10 cap screw', 2101, 500, 100, 'M3x10', 'socket cap', '', 'stainless'],
       ['M3x16 cap screw', 2102, 320, 100, 'M3x16', 'socket cap', '', ''],
-      ['M4x20 cap screw', 2103, 180, 60, 'M4x20', 'socket cap', '', ''],
+      ['M3x25 cap screw', 2103, 140, 60, 'M3x25', 'socket cap', '', ''],
+      ['M4x20 cap screw', 2104, 180, 60, 'M4x20', 'socket cap', '', ''],
+      ['M5x30 cap screw', 2105, 90, 40, 'M5x30', 'socket cap', '', ''],
+      ['Wood screw 4x30', 2106, 400, 120, '4x30', 'countersunk', '', ''],
       ['M3 nyloc nut', 2201, 400, 100, 'M3', 'nyloc', '', ''],
-      ['M3 washer', 2202, 600, 150, 'M3', 'flat', '', ''],
+      ['M4 nyloc nut', 2202, 220, 80, 'M4', 'nyloc', '', ''],
+      ['M3 washer', 2203, 600, 150, 'M3', 'flat', '', ''],
+      ['M3 T-nut', 2204, 150, 50, 'M3', '2020 extrusion', '', ''],
+      ['Heat-set insert M3', 2301, 200, 60, 'M3x5', 'brass', '', 'for printed parts'],
+      ['Pop rivet 4mm', 2302, 250, 80, '4x10', 'aluminium', '', ''],
+
       ['Aluminium 6061 bar', 3101, 8, 3, '25mm round', '300mm lengths', '', ''],
-      ['Steel flat bar', 3102, 5, 2, '25x3mm', '1m lengths', '', ''],
+      ['Aluminium plate 6mm', 3102, 4, 2, '150x150', '6mm', '', ''],
+      ['Steel flat bar', 3103, 5, 2, '25x3mm', '1m lengths', '', ''],
+      ['Brass rod 6mm', 3104, 6, 2, '6mm', '300mm', '', ''],
+      ['2020 extrusion', 3105, 12, 4, '20x20', '500mm', '', ''],
       ['End mill 6mm', 3201, 4, 2, '6mm 4-flute', 'carbide', '', 'for the CNC'],
-      ['Drill bit set', 3202, 2, 1, '1-10mm', 'HSS', '', ''],
-      ['Tap M3', 3203, 3, 2, 'M3x0.5', 'HSS', '', ''],
+      ['End mill 3mm', 3202, 6, 3, '3mm 2-flute', 'carbide', '', ''],
+      ['Drill bit set', 3203, 2, 1, '1-10mm', 'HSS', '', ''],
+      ['Tap M3', 3204, 3, 2, 'M3x0.5', 'HSS', '', ''],
+      ['Tap M5', 3205, 2, 1, 'M5x0.8', 'HSS', '', ''],
+      ['Hacksaw blade', 3206, 10, 4, '24TPI', '', '', ''],
+      ['MIG wire 0.8mm', 3301, 2, 1, '0.8mm', '5kg spool', '', ''],
+      ['Welding tips 0.8', 3302, 12, 5, '0.8mm', '', '', ''],
+
       ['Plywood 6mm', 4101, 12, 4, '600x400', 'birch', '', 'laser stock'],
-      ['MDF 3mm', 4102, 20, 6, '600x400', '', '', ''],
+      ['Plywood 12mm', 4102, 6, 2, '600x400', 'birch', '', ''],
+      ['MDF 3mm', 4103, 20, 6, '600x400', '', '', ''],
+      ['Acrylic 3mm clear', 4104, 9, 3, '600x400', 'cast', '', 'laser stock'],
       ['Oak board', 4201, 6, 2, '20x100x1000', 'kiln dried', '', ''],
+      ['Pine batten', 4202, 18, 6, '18x44x2400', '', '', ''],
+      ['Walnut offcuts', 4203, 4, 1, 'assorted', '', '', 'box under the bench'],
+      ['Dowel 8mm', 4301, 60, 20, '8mm', '40mm', '', ''],
+      ['Domino tenon 5mm', 4302, 120, 40, '5x30', 'beech', '', ''],
+      ['Wood glue', 4303, 3, 1, 'PVA D3', '500ml', '', ''],
+
       ['PLA filament black', 5101, 7, 3, '1.75mm 1kg', 'spool', '', ''],
-      ['PETG filament clear', 5102, 3, 2, '1.75mm 1kg', 'spool', '', 'runs hot'],
+      ['PLA filament white', 5102, 4, 2, '1.75mm 1kg', 'spool', '', ''],
+      ['PETG filament clear', 5103, 3, 2, '1.75mm 1kg', 'spool', '', 'runs hot'],
+      ['TPU filament', 5104, 2, 1, '1.75mm 500g', 'spool', '', ''],
+      ['ASA filament', 5105, 1, 1, '1.75mm 1kg', 'spool', '', 'outdoor parts'],
+      ['Nozzle 0.4mm', 5201, 14, 5, '0.4mm', 'brass', '', ''],
+      ['Nozzle 0.6mm', 5202, 6, 2, '0.6mm', 'hardened', '', ''],
+      ['PTFE tube', 5203, 3, 1, '2x4mm', 'metre', '', ''],
+      ['Build plate sheet', 5204, 2, 1, 'PEI', 'spring steel', '', ''],
+
+      ['Resin standard grey', 6101, 3, 1, '1kg', 'bottle', '', ''],
+      ['Resin tough clear', 6102, 1, 1, '1kg', 'bottle', '', ''],
+      ['IPA 99%', 6103, 4, 2, '1L', 'bottle', '', 'wash tank'],
+      ['Silicone RTV', 6201, 2, 1, 'shore 20', '1kg', '', ''],
+      ['Mould release', 6202, 2, 1, '', 'aerosol', '', ''],
+
+      ['Veg-tan leather 2mm', 7101, 5, 2, '2mm', 'A4 panel', '', ''],
+      ['Leather dye brown', 7102, 2, 1, '', '100ml', '', ''],
+      ['Waxed thread', 7201, 6, 2, '0.8mm', 'spool', '', ''],
+      ['Rivets 8mm', 7202, 90, 30, '8mm', 'brass', '', ''],
+      ['Snap fasteners', 7203, 60, 20, '15mm', '', '', ''],
+
+      ['Spray primer grey', 8101, 5, 2, '', '400ml', '', ''],
+      ['Spray paint black', 8102, 4, 2, 'satin', '400ml', '', ''],
+      ['Enamel white', 8103, 2, 1, '', '250ml', '', ''],
+      ['Danish oil', 8201, 3, 1, '', '500ml', '', ''],
+      ['Beeswax finish', 8202, 2, 1, '', '200g', '', ''],
+      ['Brush set', 8203, 4, 2, 'assorted', '', '', ''],
+
       ['Digital calipers', 9101, 2, 1, '150mm', '', '', ''],
-      ['Soldering iron tip', 9102, 6, 3, 'chisel 2.4mm', 'T12', '', ''],
+      ['Combination square', 9102, 2, 1, '300mm', '', '', ''],
+      ['Chisel set', 9103, 1, 1, '6-25mm', '', '', ''],
+      ['Files assorted', 9104, 5, 2, '', '', '', ''],
+      ['Soldering iron tip', 9105, 6, 3, 'chisel 2.4mm', 'T12', '', ''],
+      ['Solder 0.8mm', 9106, 3, 1, '60/40', '250g', '', ''],
+      ['Allen key set', 9107, 3, 2, '1.5-10mm', 'metric', '', ''],
       ['Cordless drill', 9201, 2, 1, '18V', '', '', ''],
-      ['Heat gun', 9202, 1, 1, '2000W', '', '', ''],
+      ['Angle grinder', 9202, 1, 1, '115mm', '', '', ''],
+      ['Random orbital sander', 9203, 1, 1, '125mm', '', '', ''],
+      ['Heat gun', 9204, 1, 1, '2000W', '', '', ''],
+      ['Bench vice', 9205, 1, 1, '100mm', '', '', ''],
+      ['Dial indicator', 9301, 1, 1, '0.01mm', '', '', ''],
+      ['Feeler gauges', 9302, 2, 1, '0.05-1mm', '', '', ''],
+      ['Steel rule 300mm', 9303, 4, 2, '300mm', '', '', ''],
     ];
     for (var r = 0; r < rows.length; r++) {
       var x = rows[r];
@@ -179,23 +302,78 @@
       });
     }
 
+    /* Projects reference parts BY NAME, not by a hand-counted row index. Writing a BOM
+       as [12, 1] against a list anyone might reorder is how a demo quietly ends up
+       showing a dust sensor made of sandpaper. */
+    function cidOf(name) {
+      for (var ci = 0; ci < db.items.length; ci++) {
+        if (db.items[ci].name === name) return db.items[ci].cid;
+      }
+      throw new Error('demo seed: no item named ' + name);
+    }
+
+    /* Parts are shared ACROSS projects on purpose — the OLED, the Pico, the M3 screws,
+       the heat-set inserts. Those overlaps are the bridges between clusters in the galaxy
+       view; without them the graph is a row of unrelated blobs and the one screen worth
+       screenshotting has nothing to show. */
     var projects = [
-      ['Bench power supply', 'building', [[8, 1], [10, 1], [1, 4], [4, 2], [12, 20]]],
-      ['Shop dust sensor', 'planning', [[8, 1], [10, 1], [2, 3], [12, 15], [13, 1]]],
-      ['CNC probe mount', 'building', [[19, 1], [21, 1], [14, 6], [17, 6]]],
-      ['Laser-cut parts bin', 'done', [[24, 3], [14, 12], [17, 12]]],
+      ['Bench power supply', 'building', [
+        ['Regulator LM2596', 2], ['M3x10 cap screw', 8], ['Hook-up wire 22AWG', 1],
+        ['Screw terminal 2p', 4], ['Capacitor 470uF', 4], ['Resistor 0.1R shunt', 2],
+        ['INA219 current sensor', 1], ['OLED 128x64', 1], ['Raspberry Pi Pico', 1],
+        ['Heat-set insert M3', 8], ['PLA filament black', 1],
+      ]],
+      ['Shop dust sensor', 'building', [
+        ['SDS011 dust sensor', 1], ['ESP32 DevKit', 1], ['OLED 128x64', 1],
+        ['Resistor 10k', 4], ['Jumper wires M-F', 10], ['PLA filament black', 1],
+        ['Heat-set insert M3', 4], ['M3x10 cap screw', 4],
+      ]],
+      ['CNC probe mount', 'building', [
+        ['Aluminium 6061 bar', 1], ['End mill 6mm', 1], ['M4x20 cap screw', 6],
+        ['M4 nyloc nut', 6], ['Tap M5', 1], ['Hook-up wire 22AWG', 1],
+      ]],
+      ['Laser-cut parts bin', 'done', [
+        ['Plywood 6mm', 3], ['Acrylic 3mm clear', 1], ['M3x16 cap screw', 12],
+        ['M3 nyloc nut', 12], ['Wood glue', 1],
+      ]],
+      ['Dust extraction manifold', 'planning', [
+        ['PETG filament clear', 2], ['Heat-set insert M3', 12], ['M3x25 cap screw', 12],
+        ['Double-sided tape', 1], ['2020 extrusion', 2],
+      ]],
+      ['Walnut jewellery box', 'planning', [
+        ['Walnut offcuts', 1], ['Domino tenon 5mm', 8], ['Wood glue', 1],
+        ['Danish oil', 1], ['Sandpaper 240g', 6], ['Rivets 8mm', 4],
+      ]],
+      ['Leather tool roll', 'planning', [
+        ['Veg-tan leather 2mm', 2], ['Waxed thread', 1], ['Snap fasteners', 4],
+        ['Leather dye brown', 1],
+      ]],
+      ['Filament dry box', 'building', [
+        ['PLA filament white', 1], ['PTFE tube', 1], ['DHT22 temp/humidity', 1],
+        ['Raspberry Pi Pico', 1], ['OLED 128x64', 1], ['Double-sided tape', 1],
+        ['M3x10 cap screw', 6], ['Heat-set insert M3', 6],
+      ]],
+      ['Welding cart', 'planning', [
+        ['Steel flat bar', 3], ['M5x30 cap screw', 8], ['MIG wire 0.8mm', 1],
+        ['Welding tips 0.8', 4], ['Spray primer grey', 2], ['Spray paint black', 2],
+      ]],
+      ['Resin wash station', 'planning', [
+        ['Acrylic 3mm clear', 1], ['IPA 99%', 2], ['Nitrile gloves L', 20],
+        ['ASA filament', 1], ['M3x16 cap screw', 8],
+      ]],
     ];
-    for (var p = 0; p < projects.length; p++) {
-      var pr = projects[p];
+    for (var p2 = 0; p2 < projects.length; p2++) {
+      var pr = projects[p2];
       var pid = db.nextPid++;
       db.projects.push({
         pid: pid, name: pr[0], notes: '', status: pr[1],
-        created: now() - (4 - p) * 86400000, active: p === 0,
+        created: now() - (projects.length - p2) * 86400000, active: p2 === 0,
       });
       for (var b = 0; b < pr[2].length; b++) {
-        db.bom.push({ pid: pid, cid: pr[2][b][0], need: pr[2][b][1] });
+        db.bom.push({ pid: pid, cid: cidOf(pr[2][b][0]), need: pr[2][b][1] });
       }
     }
+
     db.activePid = 1;
     db.meta.demo = '1';
     db.meta.setup_done = '1';
@@ -662,5 +840,17 @@
     try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {}
   };
 
-  window.__invosDemoInfo = { cap: CAP, key: KEY };
+  /* What the UI needs to know to be honest about being a demo. It reads these to print
+     one line about the cap and to offer the download — no nag, no modal, no countdown. */
+  window.__invosDemoInfo = {
+    cap: CAP,
+    key: KEY,
+    seeded: function () { return db ? db.items.length : 0; },
+    firstRun: function () {
+      try { return localStorage.getItem(KEY + '-seen') !== '1'; } catch (e) { return true; }
+    },
+    markSeen: function () {
+      try { localStorage.setItem(KEY + '-seen', '1'); } catch (e) {}
+    },
+  };
 })();

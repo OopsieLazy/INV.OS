@@ -33,34 +33,70 @@ hear from you that is not a release.
 
 ## Before the first post
 
-### 1. The demo itself
-- [ ] decide the demo posture (ROADMAP D1): **everything on, data capped**, nothing hidden
-      behind a "pro" label. Not crippleware — the reason to buy is that it is yours.
-- [ ] seed on load so the first screen is never empty
-- [ ] cap the item count, and say so plainly in one line
-- [ ] the guided `tutorial` runs (or is offered) on first open — a stranger with a blinking
-      cursor and no instructions is a stranger who closes the tab
-- [ ] a `feedback` command, demo only: one keypress from being annoyed to telling us
-- [ ] it survives a refresh (localStorage) — that is when it stops feeling like a mock-up
-- [ ] works on a phone. Open it on an actual phone, not a resized window.
+### 1. The demo itself — DONE, needs your test pass
+
+Build it with `./make-release.sh`; everything below is verified by
+`test/ui/demo-probe.mjs` (24 checks, run with no server at all).
+
+- [x] **posture: everything on, data capped.** Nothing removed, nothing behind a "pro"
+      label. The reason to buy is that the real one is yours.
+- [x] **cap: 500 items.** It is a guardrail, not a paywall — its job is to stop somebody
+      pasting ten thousand rows into localStorage, not to make the demo annoying enough
+      to buy. The seed is ~124, so there is room to play for as long as anyone wants.
+- [x] **seed: 124 items, 10 projects, all 10 departments, 10 shared parts.** Deliberately
+      not electronics-only — a machinist opening a bin full of resistors is looking at
+      somebody else's shop. Projects share parts on purpose: those overlaps are the
+      bridges in the galaxy view, and without them the best screenshot is a row of blobs.
+- [x] **it says what it is, and states the cap plainly**, in two lines on first open. No
+      modal, no countdown, no nag.
+- [x] **the guided `tutorial` starts itself** for a first-time visitor.
+- [x] **`feedback`** — demo only, and the product says why it does not have one rather
+      than pretending the command does not exist.
+- [x] **survives a refresh** (localStorage). That is when it stops feeling like a mock-up.
+- [ ] **works on a phone — YOUR TEST.** Run `invos.exe -lan`, open the printed https
+      address on an actual phone, accept the certificate warning once. Resized desktop
+      windows do not count.
+- [ ] **walk the tutorial as a stranger — YOUR TEST.** Six steps. Note anything that made
+      you hesitate; hesitation is the thing to fix.
 
 ### 2. The repo
 - [ ] `README.md` first screen: the galaxy image, one sentence, the demo link
 - [ ] a real capture at `docs/galaxy.png` — this is the single most valuable image here
-- [ ] repo topics: `inventory`, `inventory-management`, `selfhosted`, `sqlite`, `golang`,
-      `makerspace`, `workshop`
+- [ ] repo **topics** — paste these into Settings -> General (or the gear beside About):
+
+      inventory  inventory-management  selfhosted  self-hosted  sqlite  golang  go
+      workshop  makerspace  homelab  warehouse  stock-management  single-binary  agpl
+
+      Topics are how this gets found by people already searching for it, which is most of
+      GitHub's value as a channel. Also in `release/DEPLOY.md`.
 - [x] LICENSE — **AGPL-3.0**, verbatim from gnu.org. Free for every shop; if someone runs
       a modified version as a service they must publish their changes. That is the
       standard choice when the SaaS is the business, and this audience recognises it.
-- [ ] **replace `sourceURL` in cmd/invos/main.go** with the real repo address before
-      cutting a release. AGPL §13 requires network users be offered the source, and
-      `invos -version`, `/api/server` and the app's `license` command all print it —
-      shipping `REPLACE-ME` would be a compliance failure, not a typo.
+- [ ] **set `INVOS_SOURCE_URL`** — the only thing still blocking a release build:
+
+      INVOS_SOURCE_URL=https://github.com/<you>/invos ./make-release.sh
+
+      It is stamped into the binary at build time, so it is a flag rather than a code
+      edit, and **both build scripts refuse to run without it.** AGPL §13 requires that
+      network users be offered the source, and `invos -version`, `/api/server` and the
+      app's `license` command all print this address — shipping `REPLACE-ME` would be a
+      licence failure, not a typo.
 - [ ] `MANUAL.md`, `NOTES.md`, `ROADMAP-v2.md` linked from the README
 - [ ] a real "About" one-liner on the repo
 
 ### 3. The release
-- [ ] `./build.sh` — windows/amd64, linux/amd64, linux/arm64, darwin/arm64 + SHA256SUMS
+
+**`./make-release.sh` assembles the whole upload into `release/`:**
+
+    release/demo/       index.html + .nojekyll   -> GitHub Pages
+    release/binaries/   4 platforms + SHA256SUMS -> GitHub Releases
+    release/            LICENSE, README, MANUAL, DEPLOY.md
+
+`DEPLOY.md` in that folder says where each part goes, including the Pages settings and
+the repo About line. Both halves are built from the same `internal/web/ui/index.html`, so
+the demo cannot drift from the product it is advertising.
+
+- [x] `./build.sh` — windows/amd64, linux/amd64, linux/arm64, darwin/arm64 + SHA256SUMS
 - [ ] tag it, and write release notes a person would read, not a commit dump
 - [ ] **download and run each binary on a clean machine.** The first comment on any
       release post is somebody saying it does not start.

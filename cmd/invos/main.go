@@ -38,7 +38,13 @@ AGPL-3.0. sourceURL is not decoration: section 13 requires that anyone who inter
 	exactly that. So the address has to travel WITH the binary rather than living on a
 	website somebody might not find — `invos -version` prints it, and the app shows it.
 */
-const sourceURL = "https://github.com/REPLACE-ME/invos"
+var sourceURL = "https://github.com/REPLACE-ME/invos"
+
+// Stamped at build time like the version, so publishing under a different account or a
+// fork is a build flag rather than a code edit:
+//     -ldflags "-X main.sourceURL=https://github.com/you/invos"
+// build.sh sets it from INVOS_SOURCE_URL and REFUSES to build while it still says
+// REPLACE-ME, because shipping that is a licence failure rather than a typo.
 
 func main() {
 	if err := run(); err != nil {

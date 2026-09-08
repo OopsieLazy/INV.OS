@@ -71,6 +71,39 @@ check('it has seeded inventory to look at', stats0.items > 20,
 check('and projects, so the galaxy is not empty', stats0.projects >= 3,
   `${stats0.projects} projects`);
 
+// The seed decides how good the two most screenshotted screens look.
+const seedInfo = await page.evaluate(async () => {
+  const st = await DB.stats();
+  const shared = await DB.sharedParts();
+  const depts = {};
+  const page1 = await DB.peek({ limit: 1000 });
+  page1.rows.forEach(r => { depts[Math.floor(r.bin / 1000)] = 1; });
+  return { items: st.items, projects: st.projects, shared: shared.length, depts: Object.keys(depts).length };
+});
+console.log(`  seed: ${seedInfo.items} items · ${seedInfo.projects} projects · ` +
+  `${seedInfo.depts}/10 departments · ${seedInfo.shared} shared parts`);
+check('the seed fills every department, not just electronics',
+  seedInfo.depts >= 9, `${seedInfo.depts} of 10`);
+check('it is big enough for the shelf map to look like a real shop',
+  seedInfo.items >= 100, `${seedInfo.items} items`);
+check('projects share parts, so the galaxy has bridges rather than blobs',
+  seedInfo.shared >= 5, `${seedInfo.shared} shared parts`);
+
+// The demo has to say what it is and what it costs you, once, without a modal.
+const firstScreen = await screen();
+check('the demo says what it is on first open',
+  /live demo/i.test(firstScreen) && /entirely in this browser/i.test(firstScreen),
+  firstScreen.slice(0, 400));
+check('and states the cap plainly instead of hiding it',
+  /holds \d+ items/i.test(firstScreen), firstScreen.slice(0, 400));
+check('the tour starts itself for a stranger',
+  /QUICK TOUR/i.test(firstScreen), firstScreen.slice(0, 400));
+await run('skip');
+
+await run('feedback');
+check('feedback is available in the demo', /what is wrong/i.test(await screen()),
+  (await screen()).slice(-260));
+
 // Search is the first thing anyone tries.
 await run('resistor');
 check('search works', /Resistor/i.test(await screen()), (await screen()).slice(-260));

@@ -2831,3 +2831,64 @@ machine and nowhere else; and a visitor's changes must survive a refresh, which 
 moment it stops feeling like a screenshot.
 
 17 demo checks, and the product is unchanged: 135 UI, 53 settings, 20 security, 31 store.
+
+## v26.0 — the demo is a deliverable
+
+### The seed, which is most of the first impression
+
+124 items across **all ten departments**, 10 projects, 10 shared parts. The old seed was
+electronics-only, which meant a machinist opening the demo was looking at somebody else's
+shop — and the two screens most likely to be screenshotted, the shelf map and the galaxy,
+both looked thin.
+
+Parts are shared across projects deliberately: the OLED, the Pico, M3 screws, heat-set
+inserts. Those overlaps ARE the bridges between clusters in the galaxy view. Without them
+the graph is a row of unrelated blobs and the best image this product has shows nothing.
+
+BOMs reference parts **by name** and resolve through a lookup that throws on a miss.
+Writing them as row indices against a list anyone might reorder is how a demo quietly ends
+up showing a dust sensor built out of sandpaper.
+
+### The cap is 500
+
+It is a guardrail, not a paywall. Its job is to stop somebody pasting ten thousand rows
+into localStorage and blaming the app when the browser gives up — not to make the demo
+annoying enough to buy. The reason to buy is that the real one is yours and runs on your
+machine, which survives a sceptical reader; "we crippled the demo" does not. The seed is
+124, so there is room to play for as long as anyone wants, and the stored blob stays
+around 150KB.
+
+The demo says the number plainly on first open rather than hiding it until someone hits it.
+
+### First open, and `feedback`
+
+A stranger landing on a public URL has not decided to set up a shop — they are deciding
+whether to keep reading. So the demo says what it is in two lines, states the cap, and
+**starts the tour itself**. No modal, no countdown, no nag.
+
+`feedback` is demo-only on purpose. The product's whole claim is that it does not phone
+home, and a feedback button in the exe would be the first crack in that. In the product
+the command exists and says so, rather than pretending not to exist.
+
+### AGPL §13 is now enforced by the build
+
+`sourceURL` is stamped at build time (`-X main.sourceURL=...`) from `INVOS_SOURCE_URL`,
+and **both build scripts refuse to run while it says REPLACE-ME**. The licence requires
+that network users be offered the source; a placeholder shipping in a release would be a
+licence failure rather than a typo, and the only reliable guard against that is a build
+that will not produce the artifact.
+
+### `make-release.sh`
+
+One folder holding everything that gets uploaded:
+
+    release/demo/       index.html + .nojekyll   -> GitHub Pages
+    release/binaries/   4 platforms + SHA256SUMS -> GitHub Releases
+    release/            LICENSE, README, MANUAL, DEPLOY.md
+
+`DEPLOY.md` is generated with the version and source URL baked in, and carries the Pages
+settings, the repo topics and the About line. Both halves come from the same
+`internal/web/ui/index.html`, so the demo cannot drift from the product it advertises.
+
+Verified: 24 demo checks (run over file:// with nothing listening), 135 UI, 53 settings,
+20 security, 31 store.
