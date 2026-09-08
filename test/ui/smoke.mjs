@@ -652,6 +652,15 @@ async function runChecks(page, t, consoleErrors) {
   check('the advertised address is a real LAN address, not link-local',
     shopUrls.every(u => !/\/\/169\.254\./.test(u)), JSON.stringify(shopUrls));
 
+  /* Turning shop access ON must not break the station's own URL. It did: the shop
+     listener was dual-stack, so it also claimed [::1] — which is what `localhost`
+     resolves to first on most machines — and answered the app's own page with a TLS
+     handshake error. Loopback belongs to the plain listener. */
+  for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
+    const ok = await fetch(`http://${host}:${PORT}/api/health`).then(r => r.ok).catch(() => false);
+    check(`http://${host} still works with shop access on`, ok);
+  }
+
   // Shop access is encrypted. Localhost stays plain http — it never touches a wire —
   // but anything a tablet connects to must not be carrying the inventory in the clear.
   check('shop access is offered over https, not plain http',

@@ -110,6 +110,16 @@ func run() error {
 		return fmt.Errorf("listen on %s: %w (is another copy already running?)", addr, err)
 	}
 
+	/* And the IPv6 loopback, because `localhost` resolves to [::1] before 127.0.0.1 on
+	   most machines. Best effort: a box with IPv6 disabled simply does not get one, and
+	   127.0.0.1 still works. */
+	var ln6 net.Listener
+	if l6, err6 := net.Listen("tcp", fmt.Sprintf("[::1]:%d", *port)); err6 == nil {
+		ln6 = l6
+	} else {
+		slog.Debug("no IPv6 loopback listener", "err", err6)
+	}
+
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -159,6 +169,13 @@ func run() error {
 			errCh <- err
 		}
 	}()
+	if ln6 != nil {
+		go func() {
+			if err := httpSrv.Serve(ln6); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Debug("IPv6 loopback listener stopped", "err", err)
+			}
+		}()
+	}
 
 	if *open {
 		openWindow(local, *window)

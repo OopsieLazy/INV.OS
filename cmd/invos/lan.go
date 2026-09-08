@@ -50,7 +50,14 @@ func (l *lanSwitch) Enable() error {
 	if l.srv != nil {
 		return nil
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", l.port))
+	/* "tcp4", not "tcp". A dual-stack listener on 0.0.0.0 also claims [::1] — and [::1]
+	   is what `localhost` resolves to first on most machines. So with shop access on, the
+	   station's OWN url, the one the app opens in the browser, was being answered by the
+	   TLS listener and failing the handshake: turning the LAN on broke the local page.
+
+	   Loopback belongs to the local listener in main(), which serves plain http because
+	   it never touches a wire. This listener takes the network and leaves loopback alone. */
+	ln, err := net.Listen("tcp4", fmt.Sprintf("0.0.0.0:%d", l.port))
 	if err != nil {
 		return fmt.Errorf("could not open port %d to the network: %w", l.port, err)
 	}

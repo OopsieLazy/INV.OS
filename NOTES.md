@@ -2892,3 +2892,30 @@ settings, the repo topics and the About line. Both halves come from the same
 
 Verified: 24 demo checks (run over file:// with nothing listening), 135 UI, 53 settings,
 20 security, 31 store.
+
+## v26.1 — turning the LAN on was breaking the local URL
+
+Found while starting the station for the phone test, in the log rather than by looking
+for it: `TLS handshake error from [::1]` — and `http://localhost:8137` returning 400.
+
+The shop listener bound `"tcp"` on `0.0.0.0`, which on most systems produces a DUAL-STACK
+socket. That also claims `[::1]`, and `[::1]` is what `localhost` resolves to first on
+most machines. So with shop access on, the station's own page — the URL the app opens in
+the browser itself — was being answered by the TLS listener and failing the handshake.
+127.0.0.1 worked, which is exactly why it survived the security pass: every existing test
+used the numeric address.
+
+Two changes. The shop listener is `"tcp4"`, so it takes the network and leaves loopback
+alone. And the local listener now also binds `[::1]`, best effort — a box with IPv6
+disabled simply does not get one and 127.0.0.1 still works.
+
+The suite now checks all three loopback spellings with shop access ON, because the one
+that broke was the one nothing tested.
+
+Note for a tablet: `http://<lan-ip>:8137` still fails the handshake rather than redirecting
+to https. The app only ever prints and QR-encodes the https address, so this is reachable
+only by typing it by hand — but it is the kind of thing that generates a "does not work"
+report on launch day. Serving both on one port needs first-byte protocol sniffing; noted,
+not built.
+
+138 UI checks, 24 demo, 53 settings, 20 security, 31 store.
