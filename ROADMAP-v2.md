@@ -242,9 +242,21 @@ invalidate all of it is to get one shop running P9's legacy import on real data.
 ## TRACKS (added 2026-09-06 — repo went to git, two branches)
 ═══════════════════════════════════════════════════════════════
 
-### `html-demo` — the free demo (FROZEN)
-Frozen at tag `html-demo-v20.2` = the full single-file HTML app as it shipped.
-Public-facing: upload for feedback/views. No new features land here.
+### `html-demo` — the free demo (SUPERSEDED 2026-09-08)
+Frozen at tag `html-demo-v20.2`. **The branch is now a historical artifact, not the demo.**
+
+The demo is GENERATED FROM `main` instead — `demo/build-demo.sh` takes the product's own
+`internal/web/ui/index.html` and appends one script that answers `DB.req` in the browser.
+Every UI method funnels through that single function, so the entire server dependency was
+one line, and the demo needs no copy of the interface at all.
+
+Why this replaced the frozen branch: keeping a second, diverging 6,000-line UI alive purely
+to have something to show people is a tax paid forever, and the demo drifts from the
+product exactly when it matters most. Everything built since the freeze — the mobile
+layout, the guided tour, the captioned graph export, `who` — was already missing from it,
+after two days.
+
+The branch stays for history. Nothing new lands there.
 
 **Revised 2026-09-08 — D1 as originally written is probably wrong.** "Decide what the demo
 does NOT get" builds crippleware, and crippleware converts badly: someone who bounces off

@@ -2777,3 +2777,57 @@ policy, no GDPR exposure, no sending reputation and no monthly fee.
 Verified: 6 new UI checks for the tour, including the two that matter — an unrelated
 command does not advance or nag it, and `skip` then `tutorial` restarts cleanly.
 135 UI checks, 53 settings, 20 security, 31 store.
+
+## v25.9 — the demo is generated from the product, not forked from it
+
+The plan was a frozen `html-demo` branch. Two days after freezing it, it was already
+missing the mobile layout, the guided tour, the captioned export and `who` — and every one
+of those is a thing you would want a stranger to see. Keeping a second 6,000-line UI in
+step, forever, to have something to show people is a bad trade.
+
+### One line was the whole server dependency
+
+All forty of the UI's data methods funnel through `DB.req(method, path, body)`. So the
+demo needs no copy of the interface — it needs something on the other side of that one
+function:
+
+    if (window.__invosDemo) return window.__invosDemo(method, path, body);
+
+`demo/build-demo.sh` takes `internal/web/ui/index.html` — the exact file the binary serves
+— and injects `demo/demo-store.js` before the app's own script. The product binary carries
+none of it.
+
+### The store, in the browser
+
+`demo-store.js` answers the same routes with the same response shapes. It is explicitly
+NOT a reimplementation of `internal/store`: it holds a few hundred rows in an array, and
+every rule the real store exists to enforce about pagination and memory is meaningless at
+that size. What it does copy is the OBSERVABLE behaviour, because that is what the UI
+reacts to — including `Norm()`'s Ω→ohm folding, so the first search a visitor types
+behaves the way the product does.
+
+It seeds across departments on purpose — electronics, fasteners, wood, metal, tools — so a
+machinist and an electronics person both see something familiar rather than somebody
+else's shop.
+
+The four things a browser genuinely cannot do (photos, shop access, legacy import, backup)
+say WHICH and point at the download, rather than failing with something a visitor cannot
+act on.
+
+### The bug this caught immediately
+
+`/api/undo` returns `{undone, entry}`, not the entry. The shim returned the bare entry,
+which looked right and was wrong, and the UI died on `res.entry.text`. That is exactly the
+class of drift this arrangement exists to prevent, so `demo-probe.mjs` asserts undo works
+rather than merely that it responds.
+
+### The probe
+
+`demo-probe.mjs` opens the built file over `file://` with nothing listening anywhere and
+drives the real UI through what a visitor would try: search, add, take, undo, low, map,
+galaxy, the log, the tour. Two checks matter most — **any request that escapes to the
+network is a failure**, because a demo that quietly needs a server works on the developer's
+machine and nowhere else; and a visitor's changes must survive a refresh, which is the
+moment it stops feeling like a screenshot.
+
+17 demo checks, and the product is unchanged: 135 UI, 53 settings, 20 security, 31 store.

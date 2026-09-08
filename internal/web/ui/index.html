@@ -473,6 +473,19 @@ const DB = {
        — which is exactly why it is a plain header and not a session. */
     if (state.operator) opt.headers["X-INVOS-Operator"] = state.operator;
     if (body !== undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
+
+    /* THE SEAM. Every one of the forty methods below goes through this one function, so
+       this one line is the entire dependency on a server.
+
+       The public demo is the same interface with the same code, answered in the browser
+       instead of over a socket. That is deliberate: maintaining a second, diverging copy
+       of a 6,000-line UI just to have something to show people is a tax paid forever, and
+       the demo drifts from the product exactly when it matters most.
+
+       Nothing is bundled here — the product binary carries no demo code. The demo build
+       appends a script that defines this hook. */
+    if (window.__invosDemo) return window.__invosDemo(method, path, body);
+
     const r = await fetch(this.base + path, opt);
     if (r.status === 204) return null;
     const text = await r.text();
