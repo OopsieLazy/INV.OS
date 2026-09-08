@@ -1,140 +1,73 @@
-# INV.OS — Arch Linux kiosk setup
+# INV.OS — shop box setup (Linux / Raspberry Pi)
 
-Runs the inventory station fullscreen, offline, auto-starting on boot. Because it
-serves from `localhost`, the camera scanner and PWA install both work, and
-`--kiosk-printing` gives you one-tap silent label printing.
+Runs the inventory station on boot, fullscreen, offline. Works on Arch, Debian/Ubuntu and
+Raspberry Pi OS.
 
-## 1. Install
+This used to be a folder of files served by `python3 -m http.server`. It is not any more:
+**one binary** contains the interface and owns the database. There is no web root, no
+python, no service worker and no cache to bust.
 
-From the folder that contains both `deploy/` and `kiosk/`:
+## 1. Build a binary for the box
 
-```bash
-cp deploy/* kiosk/            # bring the app files next to the installer
-cd kiosk
-./install.sh                  # installs to ~/invos, port 8137
-# or choose a location:  ./install.sh /opt/invos
-```
-
-This installs `chromium` + `python` if missing, starts a tiny local web server as a
-**user systemd service** (auto-restarts, survives logout with lingering — see below),
-and drops a launcher at `~/.local/bin/invos-kiosk`.
-
-Test it immediately:
+On your dev machine:
 
 ```bash
-~/.local/bin/invos-kiosk
+./build.sh
 ```
 
-Exit kiosk Chromium with `Ctrl+W` or `Alt+F4` (or `Ctrl+Alt+F2` to another TTY).
+That produces `dist/invos-<version>-linux-amd64` and `-linux-arm64` (Pi 4/5), among others.
+The SQLite driver is pure Go, so a Windows machine cross-compiles a working Pi binary with
+no toolchain and no container.
 
-## 2. Autostart on boot — pick your compositor
+## 2. Install it
 
-### Option A — Hyprland / Sway / other wlroots (Wayland)
-Add to your compositor config:
-
-```
-# Hyprland  (~/.config/hypr/hyprland.conf)
-exec-once = ~/.local/bin/invos-kiosk
-
-# Sway  (~/.config/sway/config)
-exec ~/.local/bin/invos-kiosk
-```
-
-### Option B — X11 window manager / .xinitrc
-If you `startx` into a bare WM, append to `~/.xinitrc` (before `exec <wm>` if the WM
-should keep running, or replace it for a pure kiosk):
+Copy `dist/` and `kiosk/` to the box, then:
 
 ```bash
-~/.local/bin/invos-kiosk &
+./kiosk/install.sh                       # picks the newest matching build
+./kiosk/install.sh ../dist/invos-1.4.0-linux-arm64
+PORT=9000 LAN=0 ./kiosk/install.sh       # a station nobody else needs to reach
 ```
 
-### Option C — a desktop environment with autostart (GNOME/KDE/XFCE)
-Drop a desktop entry:
+It installs `~/.local/bin/invos`, enables a **user** systemd service, turns on lingering so
+it survives logout, and — if chromium is present — drops a fullscreen launcher at
+`~/.local/bin/invos-kiosk`. It then waits for `/api/health` and fails loudly if the server
+did not actually come up.
+
+| variable | default | meaning |
+|---|---|---|
+| `PORT` | 8137 | port to serve on |
+| `LAN` | 1 | let the shop's tablets in (`-lan`) |
+| `KIOSK` | 1 | also install the fullscreen browser launcher |
+| `PREFIX` | `~/.local` | where the binary goes |
+| `DATA_DIR` | `~/.local/share/invos` | where the database lives |
+
+Serving from `localhost` is what makes the camera scanner and one-tap label printing work,
+so the kiosk launcher points at `127.0.0.1` even when LAN access is on.
+
+## 3. Update it
 
 ```bash
-mkdir -p ~/.config/autostart
-cat > ~/.config/autostart/invos.desktop <<'DESK'
-[Desktop Entry]
-Type=Application
-Name=INV.OS Kiosk
-Exec=/home/USER/.local/bin/invos-kiosk
-X-GNOME-Autostart-enabled=true
-DESK
-sed -i "s/USER/$USER/" ~/.config/autostart/invos.desktop
+./kiosk/update.sh ../dist/invos-1.5.0-linux-arm64
 ```
 
-### Option D — full headless auto-login kiosk (dedicated shop box)
-1. Auto-login on tty1 (systemd drop-in):
-   ```bash
-   sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
-   sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf <<'DROP'
-   [Service]
-   ExecStart=
-   ExecStart=-/usr/bin/agetty --autologin YOURUSER --noclear %I $TERM
-   DROP
-   ```
-2. Auto-`startx` from your login shell (`~/.bash_profile`):
-   ```bash
-   [ "$(tty)" = "/dev/tty1" ] && ! pgrep -x Xorg >/dev/null && exec startx
-   ```
-3. Put the launcher in `~/.xinitrc` (Option B). Install a minimal WM if you want
-   window management: `sudo pacman -S --needed openbox` then `exec openbox-session`
-   after the launcher line.
+Copies the database first, keeps the outgoing binary as `invos.prev`, restarts, and waits
+for health. **If the new build does not come up it puts the old one back automatically** —
+a shop box that will not start is not something to debug on a Friday afternoon.
 
-## 3. Keep the server alive without an active login (kiosk boxes)
+## 4. Running it
 
 ```bash
-sudo loginctl enable-linger "$USER"   # user services run at boot, no login needed
+systemctl --user status invos.service     # is it up
+systemctl --user restart invos.service    # bounce it
+journalctl --user -u invos.service -f     # what is it saying
+~/.local/bin/invos-kiosk                  # fullscreen browser
 ```
 
-## 4. Backups on a real filesystem
+Autostart the browser on login by adding `invos-kiosk` to your desktop's autostart, or run
+it from `.xinitrc` on a box with no desktop.
 
-Inside the app, run `backup` once and pick a file (e.g. `~/invos-data/backup.json`).
-It rewrites itself as you work. For an extra nightly copy:
+## 5. Your data
 
-```bash
-mkdir -p ~/invos-backups
-(crontab -l 2>/dev/null; echo "0 2 * * * cp ~/invos-data/backup.json ~/invos-backups/invos-\$(date +\%F).json") | crontab -
-```
-
-## 5. Updating the app
-
-Replace `~/invos/index.html` with a new build, bump `CACHE="invos-v1"` → `v2` in
-`~/invos/sw.js` so the service worker refreshes, then:
-
-```bash
-systemctl --user restart invos.service
-```
-
-## Notes
-- Chromium (not Firefox) is required for the `scan` command's BarcodeDetector API.
-- The app holds **no secrets**; data lives in the browser profile at
-  `~/.config/invos-chromium`. Back it up with the app's `backup`, not by copying files.
-- Printer: install its driver/CUPS first (`sudo pacman -S cups && sudo systemctl enable --now cups`).
-  With `--kiosk-printing`, the app's Print buttons skip the dialog entirely.
-
-## Updating the app (git workflow — recommended for a permanent station)
-
-The cleanest "forever" setup keeps the app in a git repo so updates are one command.
-
-**One-time:** put the app under git and host it (e.g. a private GitHub repo — the
-files contain no secrets or data; see § secrets). Then on the shop box:
-```bash
-rm -rf ~/invos && git clone YOUR_REPO_URL ~/invos
-```
-
-**Each update Claude gives you a new build:**
-1. Commit the new `index.html` (+ any changed files) to your repo and push.
-2. On the shop box:  `cd ~/invos-src/kiosk && ./update.sh`
-   — it runs `git pull`, bumps the service-worker cache version, and restarts the
-   local server. Reload the kiosk with Ctrl+R (or it refreshes next launch).
-
-**No git?** Drop-in a single file instead:
-```bash
-./update.sh ~/Downloads/index.html
-```
-Same effect: copies it in, bumps the SW cache, restarts.
-
-> Note: Claude can't push to your box or repo directly (no network path from the
-> chat to your shop). The loop is always: Claude builds → you commit/download →
-> the box pulls. `update.sh` makes the box side one command.
+One file: `~/.local/share/invos/invos.db`. Copy it anywhere. `backup` inside the app writes
+a consistent copy while the shop is still using it, which is the safe way to take one.

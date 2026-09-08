@@ -1,34 +1,66 @@
 #!/usr/bin/env bash
-# INV.OS updater — pull a new build and restart the kiosk server.
-# Usage:
-#   ./update.sh                 # git pull in the app dir, then restart
-#   ./update.sh /path/new.html  # drop-in a new index.html, then restart
+# INV.OS updater — swap the binary, restart the service.
+#
+#   ./update.sh ../dist/invos-1.4.0-linux-arm64
+#   ./update.sh                # newest linux build sitting in ../dist
+#
+# There is no service-worker cache to bump any more and no index.html to copy: the binary
+# IS the app, and the browser is told not to cache the interface. Replacing the file and
+# restarting is the whole update.
 set -euo pipefail
-APP_DIR="${INVOS_DIR:-$HOME/invos}"
-PORT="${PORT:-8137}"
 
-if [[ "${1:-}" == *.html ]]; then
-  echo "==> installing $1 -> $APP_DIR/index.html"
-  cp "$1" "$APP_DIR/index.html"
-elif [[ -d "$APP_DIR/.git" ]]; then
-  echo "==> git pull in $APP_DIR"
-  git -C "$APP_DIR" pull --ff-only
-else
-  echo "!! $APP_DIR is not a git repo and no .html given."
-  echo "   Either: git clone your repo to $APP_DIR,"
-  echo "   or run: ./update.sh /path/to/new/index.html"
+PREFIX="${PREFIX:-$HOME/.local}"
+TARGET="$PREFIX/bin/invos"
+here="$(cd "$(dirname "$0")" && pwd)"
+
+NEW="${1:-}"
+if [[ -z "$NEW" ]]; then
+  NEW="$(ls -t "$here"/../dist/invos-*-linux-* 2>/dev/null | head -1 || true)"
+fi
+if [[ -z "$NEW" || ! -f "$NEW" ]]; then
+  echo "!! No new binary given and none found in ../dist."
+  echo "   Build one on the dev machine:  ./build.sh"
+  exit 1
+fi
+if [[ ! -x "$TARGET" ]]; then
+  echo "!! $TARGET is not installed yet — run ./install.sh first."
   exit 1
 fi
 
-# bump the service-worker cache so browsers fetch the new build
-SW="$APP_DIR/sw.js"
-if [[ -f "$SW" ]]; then
-  cur=$(grep -oE 'invos-v[0-9]+' "$SW" | head -1 || echo "invos-v1")
-  num=${cur##*-v}; new="invos-v$((num+1))"
-  sed -i "s/$cur/$new/g" "$SW"
-  echo "==> service-worker cache: $cur -> $new"
+echo "==> current: $("$TARGET" -version 2>/dev/null || echo unknown)"
+echo "==> new    : $("$NEW" -version 2>/dev/null || echo "$NEW")"
+
+# Keep the outgoing binary. A shop that updates and finds something broken needs a way
+# back that does not involve a working internet connection.
+cp -f "$TARGET" "$TARGET.prev" 2>/dev/null || true
+
+# The database is untouched by an update — but a backup costs a second and this is the
+# moment people most want one to exist.
+DATA_DIR="${DATA_DIR:-$HOME/.local/share/invos}"
+if [[ -f "$DATA_DIR/invos.db" ]]; then
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  cp "$DATA_DIR/invos.db" "$DATA_DIR/invos-$stamp.db" && \
+    echo "==> database copied to invos-$stamp.db"
 fi
 
-systemctl --user restart invos.service 2>/dev/null && echo "==> server restarted" || \
-  echo "   (server service not found — start it or just reload the browser)"
-echo "==> done. Reload the kiosk (Ctrl+R) or it'll pick up the new cache next launch."
+install -m 0755 "$NEW" "$TARGET"
+systemctl --user restart invos.service
+echo "==> restarted"
+
+PORT="${PORT:-$(grep -oE '\-port [0-9]+' "$HOME/.config/systemd/user/invos.service" 2>/dev/null | awk '{print $2}' | head -1)}"
+PORT="${PORT:-8137}"
+
+for _ in $(seq 1 50); do
+  if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+    echo "==> up on http://127.0.0.1:$PORT — running $("$TARGET" -version)"
+    echo "    open tabs pick it up on reload; the app also notices and says so."
+    exit 0
+  fi
+  sleep 0.2
+done
+
+echo "!! The new build did not come up. Rolling back."
+install -m 0755 "$TARGET.prev" "$TARGET"
+systemctl --user restart invos.service
+echo "   restored $("$TARGET" -version 2>/dev/null || echo "the previous binary")"
+exit 1

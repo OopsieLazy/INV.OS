@@ -2528,3 +2528,59 @@ it created go with it.
 Verified: 6 new store tests (round-trip, CID preservation, no CID reuse, collision refusal,
 one-step undo, all four wrappers, rubbish rejected) and 9 new end-to-end UI checks driving
 the real command against the real server — 118 UI checks and 26 store tests in total.
+
+## v25.4 — the zoom glitch, a manual, and P10 packaging
+
+### The zoom glitch: nothing was resetting the zoom
+
+Reported: zooming in the first seconds after the 3D graph opens makes it zoom out.
+
+Measured first, and the obvious theory was wrong. `gScale` is never touched — the wheel
+handler sets `gUserAdjusted`, and the auto-fit is correctly skipped. A probe recording
+`gScale` alongside every function that can move the camera showed the zoom held exactly,
+at every timing tried.
+
+What actually moves is the CONTENT. The inventory is fetched after the graph opens, and
+`ensureGraphItems()` re-heats the layout when it lands, so the cloud grows for a second or
+two. The auto-fit normally absorbs that — but zooming switches the fit off, which left
+anyone who zoomed early holding a fixed scale while the picture grew around them. The zoom
+was never reset; the picture really was getting smaller.
+
+So the zoom is now stored as a MULTIPLE of the fit rather than as an absolute number:
+"twice as close as fits" stays twice as close as fits when the layout changes size. That
+needed a second function — `gFitScale()` clamps to `launchZoom` and so stops responding to
+content size at all once the content is small enough, which is why the first attempt did
+nothing. `gContentFit()` is the unclamped measure, and the ratio is taken against that.
+
+The audit test grows the layout under a zoomed-in camera and asserts apparent size holds:
+before, `apparent 1.42x` with the scale unmoved; after, held.
+
+### MANUAL.md
+
+A user-facing manual for what the build actually does today, including a section on what
+it does NOT do yet — no accounts, no custody, no supplier workflow, scanning is a command
+rather than a mode, and LAN has been exercised on localhost rather than a shop floor.
+Every command in it was checked against the source rather than written from memory.
+
+### P10 — packaging
+
+- **`build.sh`** — version from `git describe` (so a binary says how far past a release it
+  is instead of claiming to BE one), `-trimpath`, stripped, and `SHA256SUMS`. Verified:
+  `invos -version` prints the stamp instead of `dev`.
+- **Cross-builds** for windows/amd64, linux/amd64, linux/arm64 and darwin/arm64, all from
+  this Windows machine with no toolchain and no container. That is the pure-Go SQLite
+  decision from v21.0 paying off, and `CGO_ENABLED=0` is set explicitly so it stays true.
+- **kiosk/install.sh and update.sh rewritten.** They copied `index.html` into a folder and
+  ran `python3 -m http.server` in front of it — the static-folder model the binary
+  replaced. Now: one binary, one user systemd unit, lingering enabled so it survives
+  logout, and no service-worker cache to bust because there is no service worker.
+  install.sh waits for `/api/health` and fails loudly rather than reporting success on a
+  server that never started. update.sh copies the database, keeps the outgoing binary, and
+  **rolls back automatically** if the new one does not come up.
+
+**Windows code signing is the one item left, and it is blocked on a purchase, not on work**
+— it needs a code-signing certificate. `build.sh` prints that the binaries are unsigned so
+a buyer does not find out from SmartScreen instead.
+
+Verified: 118 UI checks, 53 settings-audit checks (2 new for the zoom), 26 store tests,
+and all four cross-builds produced.

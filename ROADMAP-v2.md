@@ -182,17 +182,23 @@ Also handles the checksummed envelope and the blob-server response, because the 
 wrote the same inventory in four shapes. Two-step: a dry run reports what would happen
 (and every row that cannot come across) and writes nothing until `import legacy confirm`.
 
-### P10 — packaging (you cannot sell an unpackaged exe)  ★ NEXT
-
-- [ ] version stamping (-ldflags) + `invos -version` in releases, not "dev"
-- [ ] cross-builds: windows/amd64, linux/amd64, linux/arm64 (Pi)
+### P10 — packaging  [~ mostly done v25.4]
+- [x] version stamping (-ldflags) + `invos -version` in releases, not "dev"   `build.sh`
+- [x] cross-builds: windows/amd64, linux/amd64, linux/arm64 (Pi), darwin/arm64
+      Pure-Go SQLite means a Windows box builds a working Pi binary with no toolchain.
 - [ ] code signing for Windows, so it does not trip SmartScreen
-- [ ] REWRITE kiosk/install.sh + update.sh — they still copy index.html and run
-      `python3 -m http.server`, which is the old static-folder model. The exe replaces
-      both: one systemd unit running `invos -lan`, no python, no file copying.
-- [ ] one-command install for a shop box; auto-start on boot
+      BLOCKED, and not on effort: it needs a PURCHASED code-signing certificate (OV is a
+      few hundred a year; EV clears SmartScreen immediately). Nothing in the repo can
+      substitute for it. `build.sh` prints that the binaries are unsigned rather than
+      letting a buyer find out from Windows.
+- [x] REWRITE kiosk/install.sh + update.sh — no python, no index.html, no service-worker
+      cache. One binary + one user systemd unit, with lingering so it survives logout.
+- [x] one-command install for a shop box; auto-start on boot
+      install.sh waits for /api/health and fails loudly; update.sh copies the database,
+      keeps the outgoing binary and ROLLS BACK automatically if the new one will not start.
 
-### P11 — LAN for real
+### P11 — LAN for real  ★ NEXT
+
 `-lan` works and prints the URLs, but it has only been exercised by two browser tabs
 on localhost. Before promising it to a shop:
 - [ ] two real devices editing at once — concurrent-edit behaviour, stale views

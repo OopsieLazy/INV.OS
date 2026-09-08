@@ -401,6 +401,48 @@ check('the drift rate is the same whichever axis it was left on',
 
 await run('cfgreset');
 
+// ── zooming while the graph is still filling in ──────────────────────────────
+/* The inventory is fetched AFTER the graph opens, and the layout is re-heated when it
+   lands — so the content grows in the first seconds. The auto-fit normally absorbs that,
+   but zooming switches the fit off, which left anyone who zoomed early holding a fixed
+   scale while the picture shrank around them. The zoom is stored against the fit now, so
+   it survives the content changing size. */
+await run('graph inv');
+await run('graph 3d');
+await page.waitForTimeout(600);
+
+const box2 = await page.locator('#gcanvas').boundingBox();
+await page.mouse.move(box2.x + box2.width * 0.5, box2.y + box2.height * 0.5);
+for (let i = 0; i < 5; i++) await page.mouse.wheel(0, -120);
+await page.waitForTimeout(200);
+
+const zoom = await page.evaluate(async () => {
+  const ext = () => { let m = 0; for (const n of gNodes) m = Math.max(m, Math.hypot(n.x, n.y, n.z || 0)); return m; };
+  const before = { e: ext(), s: gScale, adj: gUserAdjusted, rel: gZoomRel };
+  // Grow the layout the way arriving items do, then let it settle.
+  for (const n of gNodes) { n.x *= 2; n.y *= 2; if (n.z) n.z *= 2; }
+  gAlpha = 0.2;
+  gWake();
+  // alpha decays ~1.5%/frame, so 0.2 -> the 0.015 settle threshold is about 170 frames.
+  await new Promise(r => setTimeout(r, 4000));
+  return { before, after: { e: ext(), s: gScale } };
+});
+
+check('zooming marks the camera as adjusted and remembers it against the fit',
+  zoom.before.adj === true && zoom.before.rel > 0,
+  `userAdjusted=${zoom.before.adj} zoomRel=${zoom.before.rel}`);
+
+const appBefore = zoom.before.e * zoom.before.s;
+const appAfter = zoom.after.e * zoom.after.s;
+const held = appAfter / (appBefore || 1);
+check('a zoom survives the content growing underneath it',
+  held > 0.75 && held < 1.35,
+  `content ${zoom.before.e.toFixed(0)}->${zoom.after.e.toFixed(0)}, ` +
+  `scale ${zoom.before.s.toFixed(3)}->${zoom.after.s.toFixed(3)}, apparent ${held.toFixed(2)}x`);
+
+await run('graph home');
+await run('cfgreset');
+
 check('no page errors during the audit', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

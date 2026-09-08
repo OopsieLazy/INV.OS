@@ -1383,7 +1383,7 @@ function applyCfg(changedKey){
   // if the galaxy has just been switched off, leave it
   if (!galaxyOn() && gView.kind==="galaxy") setGraphView({kind:"projects"});
   // the zoom applies to what is on screen now, not only to the next view opened
-  if (changedKey==="launchZoom" && graphMode!=="off"){ gUserAdjusted=false; gScale=gFitScale(); }
+  if (changedKey==="launchZoom" && graphMode!=="off"){ gUserAdjusted=false; gZoomRel=0; gScale=gFitScale(); }
   // a different node budget means a different graph
   if (changedKey==="graphNodes"){ graphItemsLoaded=false; graphSync(); }
   /* Orbit size is baked into each node's radius when the orbits are captured, so it can
@@ -4309,7 +4309,10 @@ function gTick(){
     gPhysics(a);
     // The cloud grows while it settles, so fit at the END of settling rather than the
     // start — once, and only while the view is still the app's to choose.
-    if (gAlpha<=0.015 && !gUserAdjusted) gFitView();
+    if (gAlpha<=0.015) {
+      if (!gUserAdjusted) gFitView();
+      else keepZoomRelative();      // they chose a zoom; hold it against the new size
+    }
   }
   const idle = gIdle();
   gSpinMaybeResume();
@@ -4696,7 +4699,7 @@ function setGraph(m){
   document.body.classList.toggle("g-split", m==="split");
   document.body.classList.toggle("g-full", m==="full");
   if (m==="off" && !gPopped()){ updateHud(); return; }   // gTick stops itself
-  gUserAdjusted=false;
+  gUserAdjusted=false; gZoomRel=0;
   gOX=0; gOY=0;
   gScale=cfg("launchZoom");     // the configured zoom, unless the content needs wider
   buildGraphData();             // build ONCE, then frame whatever is actually there
@@ -4781,12 +4784,21 @@ function gContentRadius(){
 
    This is what a graph that grows needs: the layout spreads with the node count, and a
    fixed zoom quietly leaves everything off screen. */
+/* The scale at which the content exactly fills the view. This is a pure measure of how
+   big the layout currently is, with none of gFitScale's clamping — which is what the
+   remembered zoom has to be measured against, since gFitScale caps at launchZoom and so
+   stops responding to content size entirely once the content is small enough. */
+function gContentFit(){
+  const r = gContentRadius();
+  if (!r) return 0;
+  const {W,H} = gDims();
+  return (Math.min(W,H) * 0.45) / r;
+}
+
 function gFitScale(){
   const launch = cfg("launchZoom");
-  const r = gContentRadius();
-  if (!r) return launch;
-  const {W,H} = gDims();
-  const fit = (Math.min(W,H) * 0.45) / r;
+  const fit = gContentFit();
+  if (!fit) return launch;
   return Math.max(0.02, Math.min(launch, fit));
 }
 
@@ -4797,9 +4809,40 @@ function gFitView(){
 // Set as soon as the person zooms or pans, so the auto-fit stops overriding them.
 let gUserAdjusted = false;
 
+/* The user's zoom, remembered as a MULTIPLE of the fit rather than as an absolute
+   number — 0 means they have not touched it.
+
+   The graph opens before its items arrive: the inventory is fetched asynchronously and
+   the layout is re-heated when it lands, so the content balloons a second or two in.
+   The auto-fit normally absorbs that, but zooming switches the fit off — which left
+   someone who zoomed during those first seconds holding a fixed scale while the content
+   grew around them. Nothing had reset their zoom; the picture really was getting
+   smaller. Storing the zoom against the fit means "twice as close as fits" stays twice
+   as close as fits when the layout changes size. */
+let gZoomRel = 0;
+
+function noteUserZoom(){
+  gUserAdjusted = true;
+  const f = gContentFit();
+  if (f > 0) gZoomRel = gScale / f;
+}
+
+/* Re-apply the user's zoom after the content has changed size. Only acts when the fit
+   has actually moved — otherwise every settled frame would nudge the scale. */
+function keepZoomRelative(){
+  if (!gZoomRel) return;
+  const f = gContentFit();
+  if (!(f > 0)) return;
+  const want = f * gZoomRel;
+  if (!(want > 0) || Math.abs(want - gScale) <= gScale*0.02) return;
+  const r = want/gScale;
+  gScale = want;
+  gOX *= r; gOY *= r;             // a pan is in screen units, so it scales with the zoom
+}
+
 function graphHome(){          // recenter camera / view — the auto-home
   gWake();
-  gUserAdjusted = false;
+  gUserAdjusted = false; gZoomRel = 0;
   gFitView();
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
   gSpinAx=1; gSpinAy=0; gSpinIdleAt=0; gHoming=false; gHomeT=0; gDriftT=0; gSpinFade=1;
@@ -4846,7 +4889,7 @@ function bindGraphPointer(cv, win){
     if (Math.abs(dx)+Math.abs(dy)>3) gMoved=true;
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
     else if (gPanning){
-      gUserAdjusted=true;
+      noteUserZoom();
       if (g3d){ gAutoRot=false; gHoming=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
       else { gOX+=dx; gOY+=dy; }
     }
@@ -4869,9 +4912,9 @@ function bindGraphPointer(cv, win){
   cv.addEventListener("wheel", e=>{
     e.preventDefault();
     gWake();
-    gUserAdjusted=true;                       // stop auto-fitting over their choice
     const f=e.deltaY<0?1.12:0.89;
     gScale=Math.min(6,Math.max(0.02,gScale*f));
+    noteUserZoom();                           // stop auto-fitting over their choice
   }, {passive:false});
   cv.addEventListener("touchstart", e=>{
     gWake();
