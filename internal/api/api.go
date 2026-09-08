@@ -92,21 +92,35 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Token != "" && strings.HasPrefix(r.URL.Path, "/api/") &&
+		/* The token gates the NETWORK, not the console.
+
+		   A request from loopback is the person standing at the machine — who can open
+		   the database file with any text editor, so demanding a secret from them
+		   protects nothing. It did, however, break everything: with -token set, the app's
+		   own page loaded and then failed every request, because the UI has no way to
+		   know a secret the server was never going to tell it. The one flag the manual
+		   recommends for an untrusted network made the product unusable.
+
+		   So: loopback is exempt, remote is not. A tablet holds the key itself, entered
+		   once by a person who was told it. */
+		if s.Token != "" && strings.HasPrefix(r.URL.Path, "/api/") && !isLocal(r) &&
 			!tokenOK(s.Token, r.Header.Get("X-INVOS-Token")) {
-			writeErr(w, http.StatusUnauthorized, errors.New("bad or missing token"))
+			writeErr(w, http.StatusUnauthorized, errors.New("this station needs a key"))
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-/* operator puts the caller's claimed name into the context, where appendLog picks it up
-   without every mutation having to pass it along.
+/*
+operator puts the caller's claimed name into the context, where appendLog picks it up
 
-   Innermost in the chain on purpose: a request that is going to be refused for any other
-   reason should be refused before this bothers to run, and nothing here is a security
-   decision. The name is a claim, not a credential — see store.WithOperator. */
+	without every mutation having to pass it along.
+
+	Innermost in the chain on purpose: a request that is going to be refused for any other
+	reason should be refused before this bothers to run, and nothing here is a security
+	decision. The name is a claim, not a credential — see store.WithOperator.
+*/
 func (s *Server) operator(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if who := r.Header.Get("X-INVOS-Operator"); who != "" {

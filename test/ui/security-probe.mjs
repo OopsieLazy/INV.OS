@@ -8,6 +8,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { request as httpsRequest } from 'node:https';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PORT = 8237;
@@ -25,8 +26,10 @@ execFileSync('go', ['build', '-o', 'invos-sec.exe', './cmd/invos'], {
   cwd: REPO, stdio: 'inherit',
   env: { ...process.env, PATH: `${process.env.PATH};C:\\Program Files\\Go\\bin` },
 });
+// -lan so the token rule can be tested from a NON-loopback address, which is the only
+// place it applies.
 const server = spawn(join(REPO, 'invos-sec.exe'),
-  ['-db', join(dbDir, 's.db'), '-port', String(PORT), '-open=false', '-token', TOKEN],
+  ['-db', join(dbDir, 's.db'), '-port', String(PORT), '-open=false', '-token', TOKEN, '-lan'],
   { stdio: 'ignore' });
 for (let i = 0; i < 100; i++) {
   try { if ((await fetch(`${BASE}/api/health`, { headers: { 'X-INVOS-Token': TOKEN } })).ok) break; } catch {}
@@ -59,11 +62,37 @@ check('a script that got in could not phone home',
 check('HSTS is NOT sent over plain http', h('strict-transport-security') === '',
   h('strict-transport-security'));
 
-// ── the token ───────────────────────────────────────────────────────────────
-check('no token is refused', (await fetch(BASE + '/api/stats')).status === 401);
-check('a wrong token is refused',
-  (await fetch(BASE + '/api/stats', { headers: { 'X-INVOS-Token': 'wrong' } })).status === 401);
-check('the right token is accepted', (await fetch(BASE + '/api/stats', { headers: auth })).ok);
+// ── the key ─────────────────────────────────────────────────────────────────
+/* The key gates the NETWORK, not the console.
+   Demanding it from loopback protected nothing — whoever is at the machine can open the
+   database file with a text editor — and broke everything: with -token set, the app's own
+   page loaded and then failed every request, because the UI cannot know a secret the
+   server never tells it. The one flag the manual recommends for an untrusted network made
+   the product unusable. */
+check('the station itself is not locked out by its own key',
+  (await fetch(BASE + '/api/stats')).ok);
+check('the right key is accepted', (await fetch(BASE + '/api/stats', { headers: auth })).ok);
+
+// And the part that matters: a device on the NETWORK must still be refused without it.
+const info0 = await (await fetch(BASE + '/api/server')).json();
+const lanURL = (info0.urls || []).find(u => !/localhost|127\.0\.0\.1/.test(u));
+if (!lanURL) {
+  console.log('  SKIP  remote key checks — no LAN address on this machine');
+} else {
+  const remote = async headers => await new Promise(res => {
+    const u = new URL(lanURL + '/api/stats');
+    const req = httpsRequest({
+      hostname: u.hostname, port: u.port, path: u.pathname,
+      headers: headers || {}, rejectUnauthorized: false,   // self-signed by design
+    }, r => { r.resume(); res(r.statusCode); });
+    req.on('error', () => res(0));
+    req.end();
+  });
+  check('a device on the network with no key is refused', (await remote()) === 401);
+  check('a device with the wrong key is refused',
+    (await remote({ 'X-INVOS-Token': 'wrong' })) === 401);
+  check('a device with the right key gets in', (await remote(auth)) === 200);
+}
 
 // The token must never be readable from the front end — a device that does not have it
 // must not be able to ask for it.

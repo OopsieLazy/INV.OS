@@ -2919,3 +2919,54 @@ report on launch day. Serving both on one port needs first-byte protocol sniffin
 not built.
 
 138 UI checks, 24 demo, 53 settings, 20 security, 31 store.
+
+## v26.2 — the security flag was breaking the product, and an injection audit
+
+### `-token` made the app unusable
+
+Found by asking a simple question: if a token is set, can the app's own UI still talk to
+the server? It could not. The page loaded and then **every request returned 401**, because
+the UI has no way to know a secret the server was never going to tell it — and embedding
+it in the page would defeat the point, since anyone who can load the page could read it.
+
+So the one flag the manual recommends for an untrusted network bricked the product. It
+survived the whole security pass because every test set the header by hand.
+
+The model was wrong, not just the plumbing. **The key gates the NETWORK, not the console.**
+Whoever is sitting at the station can open the database file with a text editor, so
+demanding a secret from loopback protects nothing at all. Now:
+
+- loopback is exempt — the station always works
+- a remote device is refused without the key, exactly as before
+- `key <value>` stores it on that device, verifies it against the server before saying it
+  worked, and `key -` forgets it
+- a 401 prints what to do instead of a status code, once per session rather than once per
+  in-flight request
+
+The suite now starts the probe with `-lan` and tests the rule from the machine's real LAN
+address, because loopback is the one place the rule does not apply.
+
+### The injection audit
+
+Reading the escaping and concluding it is fine is not the same as trying to break it, so
+`injection-probe.mjs` puts six real payloads — `<img onerror>`, `<script>`, an attribute
+breakout, a `javascript:` URL — into **every** field a person can type into, plus the shop
+name, a department label and a shelf label. Then it renders every screen that shows any of
+them: the listing, bins, map, low, stats, recent, sections, the detail card, doctor, the
+graph, health, and the printed label sheet.
+
+Nothing executed and nothing became an element. Findings:
+
+- **The UI was already sound.** One `esc()` covering `& < > " '`, applied at the print
+  helper and at each of the four `innerHTML` sites that touch user data. The rest of the
+  UI builds DOM with `textContent`, which cannot inject by construction.
+- **The sort column is an allowlist**, which is the only safe way to handle the one part
+  of a query that cannot be parameterised. `sort=name; DROP TABLE items;--` is ignored and
+  the table is still there afterwards.
+- **A quoted search is a literal search.** `' OR 1=1 --` returns zero matches rather than
+  everything.
+- The probe also asserts the hostile text is **still displayed**. Escaping that silently
+  eats the content is its own bug, and it is the failure mode a naive fix produces.
+
+Verified: 11 injection checks, 22 security (5 now covering the key from a real remote
+address), 138 UI, 24 demo, 53 settings, 31 store.

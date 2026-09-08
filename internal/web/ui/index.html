@@ -472,6 +472,11 @@ const DB = {
        "who took the last one". It is a claim, not a credential — nobody is authenticated
        — which is exactly why it is a plain header and not a session. */
     if (state.operator) opt.headers["X-INVOS-Operator"] = state.operator;
+    /* The shop key, on a device that needs one. Loopback never does — the person at the
+       machine can read the database file anyway — so this is empty on the station itself
+       and set once, by hand, on each tablet. It lives in this device's own storage and is
+       never sent anywhere but back to the station that issued it. */
+    if (state.shopKey) opt.headers["X-INVOS-Token"] = state.shopKey;
     if (body !== undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
 
     /* THE SEAM. Every one of the forty methods below goes through this one function, so
@@ -491,6 +496,12 @@ const DB = {
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch(e){ throw new Error("bad response from server"); }
+    if (r.status === 401){
+      // Ask rather than fail: a tablet meeting a protected station for the first time
+      // should be told what to do, not handed a status code.
+      needsKey();
+      throw new Error("this station needs a key — type:  key <the shop key>");
+    }
     if (!r.ok){
       const err = new Error((data && data.error) || ("server error " + r.status));
       // carry structured detail through, so a caller can render a shortage list rather
@@ -613,6 +624,21 @@ async function renameSection(code, label){
   if (label) state.sections[code] = label; else delete state.sections[code];
   graphSync();
   return true;
+}
+
+/* Shown when the station refuses this device for want of a key. Once per session: a
+   tablet that has just been told will be making several failing requests at once, and
+   five copies of the same instruction is noise, not help. */
+let keyPromptShown = false;
+function needsKey(){
+  if (keyPromptShown) return;
+  keyPromptShown = true;
+  setTimeout(()=>{
+    print("");
+    print("This station is protected.","a");
+    print("  Ask whoever set it up for the shop key, then type:  key <the key>","d");
+    print("  It is stored on this device only, and only sent back to this station.","d");
+  }, 0);
 }
 
 /* Legacy import — moving a shop off the v20.2 single-file HTML build.
@@ -1836,7 +1862,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip","license","about","source","feedback","bug",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip","license","about","source","feedback","bug","key","shopkey",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -3507,6 +3533,38 @@ async function exec(line){
        bench tablet is "bench", the office PC is whoever sits there. There is no password
        and no login — this is ATTRIBUTION, not authentication, and the wording below says
        so rather than implying an audit trail it cannot deliver. */
+    /* The shop key for THIS device. Deliberately not a login: there are no accounts, and
+       everyone who has the key has the same access. It exists so a station on a network
+       you do not trust can refuse strangers — not so it can tell two people apart. `who`
+       is the one that answers who did something. */
+    case "key": case "shopkey": {
+      const k = rest.trim();
+      if (!k){
+        print(state.shopKey ? "this device is holding a key." : "this device has no key set.", state.shopKey?"g":"d");
+        print("  set it:  key <the shop key>    ·  forget it:  key -","d");
+        print("  the station itself never needs one — only devices reaching it over the network.","d");
+        return;
+      }
+      if (k === "-" || k.toLowerCase() === "forget"){
+        state.shopKey = ""; await save();
+        print("key forgotten on this device.","d");
+        return;
+      }
+      state.shopKey = k;
+      await save();
+      // Prove it before saying it worked: a key that is quietly wrong is worse than one
+      // that is obviously wrong.
+      try {
+        await DB.stats();
+        print("key accepted — this device can reach the shop.","g");
+        await loadAll(); refreshHome(false); graphSync();
+      } catch(e){
+        state.shopKey = ""; await save();
+        print("that key was refused. check it and try again.","a");
+      }
+      return;
+    }
+
     case "who": case "iam": {
       const name = rest.trim();
       if (!name){

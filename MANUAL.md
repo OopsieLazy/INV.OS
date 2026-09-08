@@ -196,8 +196,24 @@ self-signed: **each device warns once**, someone taps through, and after that th
 is genuinely encrypted. Without it, every quantity, part number and token crosses the air
 in plain text where anything already on that network can read it. `-tls=false` opts out.
 
-For a network you do not trust, start with `-token secret` and callers must present it.
-This is deliberately not an account system — it is a shop, not a bank.
+### Locking it to people you trust
+
+For a network you do not fully trust, start the station with a key:
+
+```
+invos.exe -lan -token something-long-and-not-guessable
+```
+
+Then on each tablet, once: `key something-long-and-not-guessable`. It is stored on that
+device and only ever sent back to this station. `key -` forgets it.
+
+**The station itself never needs the key.** Whoever is sitting at the machine can open the
+database file with a text editor, so asking them for a secret protects nothing — the key
+exists to gate the *network*.
+
+This is deliberately not an account system. Everyone with the key has the same, complete
+access; it decides *whether* somebody gets in, never *who* they are. `who <name>` is the
+one that records who did what.
 
 What defends the station once it is on the network is section 6.
 
@@ -218,7 +234,9 @@ protection that is off.
 | | |
 |---|---|
 | **Shop access is encrypted** | `https://` for anything off this machine. Localhost stays plain `http://` — it never touches a wire. |
-| **Your token never reaches the page** | The interface is only ever told *whether* one is set, never what it is. There is no field, anywhere, that carries it. |
+| **The key gates the network, not the console** | A tablet needs it; the machine it runs on does not, because whoever is sitting there can read the database file anyway. |
+| **Your key never reaches the page** | The server never sends it. A device holds the copy you typed into it, in its own storage. |
+| **Everything you type is treated as text** | An item called `<script>…</script>` is a part with an odd name, not code. Every screen, the printed labels included. |
 | **Tokens are compared in constant time** | A comparison that stops at the first wrong byte leaks its length and contents to anyone timing it. This one does not stop early. |
 | **Your file paths stay on this machine** | `db` shows you the full path. A tablet asking the same question gets `invos.db` — not your username and folder layout. |
 | **Cross-site writes are refused** | A tab open on another site cannot POST to the station and change your stock. Reads that change nothing are still allowed. |
