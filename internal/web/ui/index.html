@@ -3418,6 +3418,9 @@ let gYaw=0.5, gPitch=-0.35, gAutoRot=true, gCamZ=520;
    so letting go leaves the scene turning the way you were turning it. gSpinIdleAt is the
    moment the pointer was released; `spin resumes in` is measured from there. */
 let gSpinAx=1, gSpinAy=0, gSpinIdleAt=0;
+const PITCH_HOME = -0.35;     // the tilt a fresh graph opens at
+let gHoming = false;          // easing the tilt back after a drag
+let gDriftT = 0;              // timestamp of the last drift step, for time-based motion
 const gc=$("gcanvas"), gpane=$("graphpane");
 
 let hudOn=true, sweepT=0;   // HUD frame + boot-sweep animation clock
@@ -3441,6 +3444,10 @@ const SETTINGS = [
   // close the graph. These two decide what happens after you let go.
   {k:"spinResume", label:"spin resumes in", min:0,  max:15,  step:0.5,  def:4,    fmt:v=>v===0?"never":v.toFixed(1)+"s"},
   {k:"spinAxis",   label:"spin follows drag",min:0, max:1,   step:0.05, def:1,    fmt:v=>v===0?"off (level)":Math.round(v*100)+"%"},
+  // Auto-home eases the TILT back to level when the spin resumes and leaves the yaw
+  // alone, because yaw is the spin axis: winding it back to a fixed angle would read as
+  // the scene rewinding. Full recentre is still `h` / `graph home`.
+  {k:"spinHome",   label:"auto-home on resume",min:0,max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
   // How many parts the graph will draw. Worth exposing now that it scales: a slow
   // machine can dial it down, and a big shop can push it up and watch the frame cost.
   {k:"graphNodes", label:"graph nodes",    min:1000,max:50000,step:1000,def:20000,fmt:v=>v>=1000?(v/1000)+"k":String(v)},
@@ -3775,16 +3782,54 @@ function gSpinNote(dx, dy){
   gSpinAx /= l; gSpinAy /= l;
 }
 
+/* One step of drift, in TIME rather than in frames.
+
+   `gYaw += driftSpeed` every frame ties the rotation rate to how fast frames happen: a
+   144Hz screen spins nearly two and a half times faster than a 60Hz one, and — the part
+   you can see — a single long frame turns the scene by the same amount as a short one,
+   so every hitch in the frame rate is a hitch in the motion. Scaling by elapsed time
+   makes a dropped frame turn the scene further instead of stalling it, which is what
+   "smooth" actually means here.
+
+   The step is capped at three frames' worth. After a tab has been in the background for
+   a minute the elapsed time is enormous, and without the cap the scene would snap round
+   to wherever it "should" be the instant you came back. */
 function gDrift(){
   const sp = cfg("driftSpeed");
   if (!sp) return;
-  const follow = cfg("spinAxis");
-  const ax = 1 + (gSpinAx - 1)*follow, ay = gSpinAy*follow;
-  gYaw += sp*ax;
+  const now = performance.now();
+  const dt = gDriftT ? Math.min(50, now - gDriftT) : 16.7;
+  gDriftT = now;
+  const k = dt/16.7;                      // 1.0 at 60fps, and the units stay unchanged
+
+  if (gHoming){
+    /* Ease the tilt home. Exponential, so it slows into place instead of arriving at
+       full speed and stopping dead — and it is framed in dt too, or the ease itself
+       would be as frame-rate dependent as the thing it is smoothing. */
+    const e = 1 - Math.pow(0.001, dt/1000);    // ~99.9% of the way home in one second
+    gPitch += (PITCH_HOME - gPitch)*e;
+    if (Math.abs(gPitch - PITCH_HOME) < 0.002){ gPitch = PITCH_HOME; gHoming = false; }
+  }
+
+  const follow = gHoming ? 0 : cfg("spinAxis");
+  let ax = 1 + (gSpinAx - 1)*follow, ay = gHoming ? 0 : gSpinAy*follow;
+
+  /* Vertical rotation is damped to 0.6 because pitch has far less room than yaw. That
+     alone made a mostly-vertical drift visibly SLOWER than a level one — a straight-up
+     drag left yaw at a third of its rate and pitch at 60% of that. Normalising by the
+     same factor keeps the on-screen rate identical whichever way you left it pointing. */
+  const mag = Math.hypot(ax, ay*0.6) || 1;
+  ax /= mag; ay /= mag;
+
+  gYaw += sp*ax*k;
   if (ay){
-    const want = gPitch + sp*ay*0.6;          // vertical is gentler; it runs out of room
-    if (want > 1.4 || want < -1.4) gSpinAy = -gSpinAy;
-    else gPitch = want;
+    /* Fade the vertical component out as the tilt runs out of room, rather than
+       reversing at the stop. A bounce is an instant change of direction — the jankiest
+       thing in the frame — and this settles into a level spin instead. */
+    const head = (1.4 - Math.abs(gPitch))/0.35;
+    const fade = Math.max(0, Math.min(1, head));
+    if (fade <= 0) gSpinAy = 0;
+    gPitch += sp*ay*0.6*k*fade;
   }
 }
 
@@ -3810,7 +3855,10 @@ function gSpinMaybeResume(){
   if (gAutoRot || gLastXY) return;
   const wait = cfg("spinResume");
   if (!wait || !gSpinIdleAt) return;
-  if (performance.now() - gSpinIdleAt >= wait*1000) gAutoRot = true;
+  if (performance.now() - gSpinIdleAt < wait*1000) return;
+  gAutoRot = true;
+  gDriftT = 0;                        // start the clock fresh, not from before the drag
+  if (cfg("spinHome")) gHoming = true;
 }
 
 function stepOrbits(dt, blend){
@@ -4662,7 +4710,7 @@ function graphHome(){          // recenter camera / view — the auto-home
   gUserAdjusted = false;
   gFitView();
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
-  gSpinAx=1; gSpinAy=0; gSpinIdleAt=0;
+  gSpinAx=1; gSpinAy=0; gSpinIdleAt=0; gHoming=false; gDriftT=0;
   gAlpha=Math.max(gAlpha,0.6);
 }
 async function graphSync(){
@@ -4707,7 +4755,7 @@ function bindGraphPointer(cv, win){
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
     else if (gPanning){
       gUserAdjusted=true;
-      if (g3d){ gAutoRot=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
+      if (g3d){ gAutoRot=false; gHoming=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
       else { gOX+=dx; gOY+=dy; }
     }
     gLastXY=[ox,oy];
@@ -4723,6 +4771,7 @@ function bindGraphPointer(cv, win){
     }
     if (gOrbit && gDrag) recaptureOrbit(gDrag);   // carry on from where it was dropped
     gSpinIdleAt = performance.now();     // `spin resumes in` counts from the release
+    gDriftT = 0;
     gDrag=null; gPanning=false; gLastXY=null; cv.style.cursor="grab";
   });
   cv.addEventListener("wheel", e=>{
@@ -4747,7 +4796,7 @@ function bindGraphPointer(cv, win){
     const dx=ox-gLastXY[0], dy=oy-gLastXY[1];
     if (Math.abs(dx)+Math.abs(dy)>5) gMoved=true;
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
-    else if (g3d){ gAutoRot=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
+    else if (g3d){ gAutoRot=false; gHoming=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
     else { gOX+=dx; gOY+=dy; }
     gLastXY=[ox,oy];
     e.preventDefault();
@@ -4762,6 +4811,7 @@ function bindGraphPointer(cv, win){
     }
     if (gOrbit && gDrag) recaptureOrbit(gDrag);
     gSpinIdleAt = performance.now();
+    gDriftT = 0;
     gDrag=null; gPanning=false; gLastXY=null;
   });
 }

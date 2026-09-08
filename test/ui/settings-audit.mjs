@@ -314,8 +314,9 @@ check('a vertical drag tilts the drift onto that axis',
   tilt.dp > 1e-4 && Math.abs(tilt.ay) > 0.5,
   `pitch moved ${tilt.dp.toFixed(5)}, axis=(${tilt.ax.toFixed(2)},${tilt.ay.toFixed(2)})`);
 
-// at 0 the drift is level again no matter how it was dragged
-await page.evaluate(() => setCfg('spinAxis', 0));
+// at 0 the drift is level again no matter how it was dragged. auto-home has to be off
+// for this one: homing also moves the pitch, and moving it is the whole point of it.
+await page.evaluate(() => { setCfg('spinAxis', 0); setCfg('spinHome', 0); });
 await dragCanvas(0, -70);
 await page.waitForTimeout(1600);
 const level = await page.evaluate(async () => {
@@ -324,6 +325,54 @@ const level = await page.evaluate(async () => {
   return Math.abs(gPitch - p0);
 });
 check('spin follows drag = off keeps the drift level', level < 1e-6, `pitch moved ${level.toFixed(6)}`);
+
+// auto-home: the tilt comes back to level, the yaw is left where it is
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinHome', 1); });
+await dragCanvas(0, -70);
+const tilted = await page.evaluate(() => gPitch);
+const home = await page.evaluate(async () => {
+  const y0 = gYaw;
+  await new Promise(r => setTimeout(r, 3000));
+  return { pitch: gPitch, yawMoved: Math.abs(gYaw - y0), homing: gHoming };
+});
+check('auto-home brings the tilt back to level',
+  Math.abs(home.pitch - (-0.35)) < 0.01 && Math.abs(tilted - (-0.35)) > 0.1,
+  `pitch ${tilted.toFixed(3)} -> ${home.pitch.toFixed(3)}`);
+check('auto-home leaves the yaw alone (it keeps spinning, not rewinding)',
+  home.yawMoved > 1e-4, `yaw moved ${home.yawMoved.toFixed(5)}`);
+
+// off, the tilt stays where it was dragged
+await page.evaluate(() => setCfg('spinHome', 0));
+await dragCanvas(0, -70);
+await page.waitForTimeout(2500);
+const stayed = await page.evaluate(() => gPitch);
+check('auto-home off leaves the tilt where you put it',
+  Math.abs(stayed - (-0.35)) > 0.05, `pitch ${stayed.toFixed(3)}`);
+
+/* The rate must not depend on which way you left it pointing. Vertical rotation is
+   damped because pitch has less room, and before normalising, a straight-up drag drifted
+   visibly slower than a level one. Compare the on-screen angular rate both ways. */
+await page.evaluate(() => { setCfg('spinHome', 0); setCfg('spinAxis', 1); });
+async function driftRate() {
+  return await page.evaluate(async () => {
+    const y0 = gYaw, p0 = gPitch;
+    await new Promise(r => setTimeout(r, 1000));
+    return Math.hypot(gYaw - y0, (gPitch - p0)) ;
+  });
+}
+// Drag DOWNWARD so the tilted drift heads away from the pitch limit. Toward it, the
+// vertical component deliberately fades out as it runs out of room, so a measurement
+// there reads the fade rather than the rate.
+await dragCanvas(90, 0);
+await page.waitForTimeout(1500);
+const rateLevel = await driftRate();
+await page.evaluate(() => { gPitch = -0.35; });
+await dragCanvas(0, 60);
+await page.waitForTimeout(1500);
+const rateTilted = await driftRate();
+const ratio = rateTilted / (rateLevel || 1);
+check('the drift rate is the same whichever axis it was left on',
+  ratio > 0.75 && ratio < 1.35, `level ${rateLevel.toFixed(4)} vs tilted ${rateTilted.toFixed(4)} (${ratio.toFixed(2)}x)`);
 
 await run('cfgreset');
 

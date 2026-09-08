@@ -2406,3 +2406,38 @@ is the point of the setting being on; `auto-orbit 0` opts out.
 
 Verified: 109 UI checks, 45 settings-audit checks (6 new, covering stop-on-drag, resume,
 never, the tilted axis and level-when-off), `go test ./internal/...`.
+
+## v25.1 — the drift is time-based now, and it can auto-home
+
+Reported: the spin that resumes after a drag is "slower/jankier" than the level one.
+
+Both halves were real, and neither was subtle once measured.
+
+**Slower.** Vertical rotation is damped to 0.6 because pitch has nowhere near the room yaw
+has. Nothing compensated for that, so the rate depended on which way you had left the axis
+pointing: a straight-up drag left yaw at a fraction of its rate and the pitch at 60% of
+what was left. Measured on a mostly-vertical axis: **0.57x** the level rate. The axis is
+now normalised by the same 0.6, so the on-screen angular rate is identical whichever way
+it points. Measured after: within 0.75-1.35x, and the audit asserts it.
+
+**Jankier.** Two causes:
+
+- The drift was **per-frame**, not per-second. `gYaw += driftSpeed` every frame ties the
+  rotation to how fast frames arrive: a 144Hz screen spins ~2.4x faster than a 60Hz one,
+  and every long frame turns the scene by exactly as much as a short one — so any hitch in
+  the frame rate was a hitch in the motion. It is scaled by elapsed time now, capped at
+  three frames' worth so a backgrounded tab does not snap round on return.
+- The vertical component **bounced** off the pitch clamp — an instant reversal, which is
+  about the jankiest thing available in a frame. It now fades out over the last 0.35rad of
+  headroom and settles into a level spin.
+
+**`auto-home on resume`** (new setting, default on). When the spin resumes it eases the
+TILT back to level and leaves the yaw alone: yaw is the spin axis, and winding it back to a
+fixed angle reads as the scene rewinding. Exponential ease, ~1s, itself framed in dt.
+Full recentre is still `h` / `graph home`. Off, the tilt stays wherever you dragged it.
+
+Frame timing after, 400 items, 3 runs: p50 13.3ms, p95 14.7-16.1ms, 0 stutters on runs 2
+and 3. The one 70.7ms frame is the first frame of the first open — graph construction, and
+pre-existing.
+
+Verified: 109 UI checks, 50 settings-audit checks (5 new), `go test ./internal/...`.
