@@ -3202,15 +3202,70 @@ async function exec(line){
       if (ml==="style"){ gStyle = gStyle==="holo"?"clean":"holo"; print(`graph style: ${gStyle==="holo"?"holographic glow":"clean minimal"}`,"d"); return; }
       if (ml==="hud"){ hudOn=!hudOn; state.hud=hudOn; updateHud(); gWake(); await save(); print(`HUD frame ${hudOn?"on":"off"}`,"d"); return; }
       if (ml==="sweep"){ sweepT=performance.now(); print("sweep","d"); return; }
+      /* An exported graph is the one thing from this app that other people see. It used
+         to be a raw dump of the pane: whatever odd shape the split happened to be, with
+         nothing in the picture saying what it was or whose shop it came from.
+
+         It now gets a caption strip — the shop's name, what the view is, how many things
+         are in it, and the product name. That costs nothing and means a screenshot
+         someone shares carries its own context instead of being a pretty blob.
+
+         The graph is drawn at its NATIVE size and never upscaled: enlarging a 640px pane
+         to something "shareable" just produces a soft 1600px image. `graph full` first
+         is the way to get a big one, and it says so. */
       if (["png","image","snapshot","shot"].includes(ml)){
         if (graphMode==="off"){ print("open the graph first (graph / graph galaxy), then: graph png","a"); return; }
         const cv = gPopped() ? gPopCanvas : gc;
         if (!cv){ print("no graph canvas to export.","a"); return; }
-        cv.toBlob(b=>{ if(!b){ print("couldn't capture the graph.","a"); return; }
+
+        const scale = Math.max(1, cv.width/900);          // caption scales with the image
+        const barH  = Math.round(54*scale);
+        const out   = document.createElement("canvas");
+        out.width = cv.width; out.height = cv.height + barH;
+        const o = out.getContext("2d");
+
+        const css = getComputedStyle(document.documentElement);
+        const pick = (n,f)=>(css.getPropertyValue(n)||"").trim()||f;
+        o.fillStyle = pick("--bg","#0c0c0c");
+        o.fillRect(0,0,out.width,out.height);
+        o.drawImage(cv,0,0);
+
+        o.fillStyle = "rgba(255,255,255,.06)";
+        o.fillRect(0,cv.height,out.width,Math.max(1,Math.round(scale)));
+
+        const viewName = gView.kind==="inv" ? "inventory"
+                       : gView.kind==="galaxy" ? "project galaxy"
+                       : gView.kind==="projects" ? "projects" : "project";
+        const left = (state.shopName ? state.shopName + " — " : "") + viewName;
+        const count = gView.kind==="inv"
+          ? `${graphItemsTotal||gNodes.length} items`
+          : `${(state.projects||[]).length} projects`;
+
+        o.textBaseline = "middle";
+        o.font = `600 ${Math.round(17*scale)}px ui-monospace, monospace`;
+        o.fillStyle = pick("--white","#fff");
+        o.fillText(left, Math.round(20*scale), cv.height + barH*0.38);
+
+        o.font = `${Math.round(13*scale)}px ui-monospace, monospace`;
+        o.fillStyle = pick("--dimgreen","#767676");
+        o.fillText(`${count} · ${new Date().toLocaleDateString()}`,
+                   Math.round(20*scale), cv.height + barH*0.72);
+
+        o.textAlign = "right";
+        o.font = `600 ${Math.round(15*scale)}px ui-monospace, monospace`;
+        o.fillStyle = pick("--cyan","#61d6d6");
+        o.fillText("INV.OS", out.width - Math.round(20*scale), cv.height + barH*0.38);
+        o.font = `${Math.round(11*scale)}px ui-monospace, monospace`;
+        o.fillStyle = pick("--dimgreen","#767676");
+        o.fillText("workshop inventory", out.width - Math.round(20*scale), cv.height + barH*0.72);
+
+        out.toBlob(b=>{ if(!b){ print("couldn't capture the graph.","a"); return; }
+          const shop=(state.shopName||"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
           const el=document.createElement("a"); el.href=URL.createObjectURL(b);
-          el.download=`graph-${gView.kind}-${new Date().toISOString().slice(0,10)}.png`;
+          el.download=`${shop?shop+"-":""}${gView.kind}-graph-${new Date().toISOString().slice(0,10)}.png`;
           el.click(); setTimeout(()=>URL.revokeObjectURL(el.href),1000);
-          print("graph saved as PNG.","g");
+          print(`graph saved — ${out.width}x${out.height} PNG.`,"g");
+          if (graphMode!=="full") print("  bigger picture: graph full, then graph png","d");
         },"image/png");
         return;
       }

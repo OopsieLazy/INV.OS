@@ -333,6 +333,78 @@ P9 (legacy import) is a feature AND the whole argument to a spreadsheet shop:
 - [ ] a build log is a genuine artifact: the graph performance work (1702ms → 17ms), the
       GC hunt, the orbit maths. That audience buys tools from people who work like that.
 
+### M7 — sellability from what is ALREADY built (added 2026-09-08)
+
+Asked: which existing features would most improve sellability. Ranked by value per hour,
+not by size:
+
+- [x] **captioned graph export** — DONE v25.7. `graph png` was a raw dump of the pane:
+      odd shape, and nothing in the image said what it was. It now carries the shop name,
+      the view, the count and the product name. Every shared screenshot is now an ad that
+      explains itself, which is the cheapest marketing this product will ever get.
+- [ ] **a guided first run** (R11.4, currently DEFERRED — promote it). The first sixty
+      seconds decide whether someone becomes a user. Everything else on this list is
+      wasted on a person who opened it, saw a blinking cursor and closed it. Six steps,
+      skippable, re-runnable.
+- [ ] **`cost` per item + valuation** (part of A3). "What is all this worth" is the
+      question an OWNER asks, and the answer is needed for insurance and year-end. The
+      `value` field is the part's rating (10kΩ), not money — this needs a real `cost`
+      column, which is the one schema change on this list.
+- [ ] **B1 custody** — not the biggest feature, but the most RELATABLE one to describe to
+      a shop in a sentence: "it tells you who has the tool."
+- [ ] **a demo seed that looks like the buyer's shop.** The seed is electronics-flavoured.
+      A machinist opening it sees somebody else's inventory. Cheap to add variants.
+- [ ] **printed output carries a discreet footer.** A label sheet and a low-stock list are
+      seen by everyone who walks past; they are already leaving the building.
+
+Deliberately NOT on this list: anything that adds setup. Every feature that makes the
+first run longer costs more than it earns.
+
+### Where to publish (added 2026-09-08)
+
+Stated as the hardest part. The honest answer is that ONE channel done properly beats six
+done thinly, and for this product the first channel is not a close call.
+
+**1. r/selfhosted — do this first.** A single Go binary, no account, no cloud, owns a
+   SQLite file you can copy. That subreddit's entire value system is this product's
+   feature list. It is also large, active, and its readers install things the same day.
+   One post there is worth more than a month of everything else.
+
+**2. GitHub — not a channel, the substrate.** Nobody discovers you here, but everybody
+   verifies you here, and every other channel points at it. Needed BEFORE posting
+   anywhere: release binaries (P10 `build.sh` produces them), a README that opens with
+   the galaxy image, repo topics (`inventory`, `selfhosted`, `sqlite`, `golang`), and
+   `MANUAL.md` linked. Then submit to **awesome-selfhosted** — a slow, permanent trickle
+   of exactly the right people, forever.
+
+**3. Hacker News, Show HN — one shot, high variance, worth taking.** The build-log
+   material is precisely HN's taste: 1702ms → 17ms, the GC hunt, "I built a fix for the
+   wrong cause and measured it". Go after the r/selfhosted round has fixed the obvious
+   complaints, because HN gets one attempt.
+
+**4. The forums the ERP observation came from.** Answering "how do you track inventory"
+   threads is on-topic, free, evergreen, and the person asking has the problem TODAY.
+
+**5. Maker communities** — r/machinists, r/hobbycnc, r/electronics, r/3Dprinting,
+   r/functionalprint. Different framing: the galaxy screenshot, not the architecture.
+
+**Instagram: skip it, for now.** The galaxy view is genuinely photogenic, so the instinct
+is right — but nobody adopts inventory software from IG, and it costs a posting habit to
+maintain. A 60-second clip is worth making; embed it in the posts above rather than
+building an IG audience. Revisit only if a maker audience already exists there.
+
+**What to have ready before the first post** (traffic with nowhere to land is wasted):
+- [ ] the demo live, on a URL, no signup (D1-D3)
+- [ ] GitHub release with binaries for win/linux/arm64, and checksums
+- [ ] a README whose first screen is the galaxy image and one sentence
+- [ ] a 30-60s clip: type a search, print a label, open the galaxy
+- [ ] be free for the four hours after posting — answering comments IS the launch
+
+**Post shape that works in these places:** what it is in one line, why it exists in two,
+the screenshot, the demo link, the source link, and the limits stated plainly. The
+"what it will not do" section is an asset here — that audience has been burned, and
+saying it first is what makes the rest credible.
+
 ### The sequencing recommendation
 
 1. **Publish the demo now** (D1-D3), with the revised posture above. It is frozen and

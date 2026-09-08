@@ -867,6 +867,34 @@ async function runChecks(page, t, consoleErrors) {
   check('the whole import undoes in one step', importUndone === beforeImport,
     `items ${importUndone}, expected back to ${beforeImport}`);
 
+  // ── the shared screenshot ─────────────────────────────────────────────────
+  // An exported graph is the one thing from this app that other people see, so it has to
+  // carry its own context rather than being a pretty blob with no caption.
+  console.log(String.fromCharCode(10) + 'graph export');
+
+  await t.run('graph galaxy');
+  await page.waitForTimeout(800);
+  const pngShot = await page.evaluate(async () => {
+    const cv = document.getElementById('gcanvas');
+    const before = { w: cv.width, h: cv.height };
+    // Capture what the export builds without actually downloading it.
+    const orig = HTMLCanvasElement.prototype.toBlob;
+    let made = null;
+    HTMLCanvasElement.prototype.toBlob = function (cb, type) {
+      if (this !== cv) made = { w: this.width, h: this.height, data: this.toDataURL(type) };
+      return orig.call(this, cb, type);
+    };
+    await exec('graph png');
+    await new Promise(r => setTimeout(r, 400));
+    HTMLCanvasElement.prototype.toBlob = orig;
+    return { before, made };
+  });
+  check('the export adds a caption strip below the graph',
+    !!pngShot.made && pngShot.made.h > pngShot.before.h && pngShot.made.w === pngShot.before.w,
+    JSON.stringify({ canvas: pngShot.before, exported: pngShot.made && { w: pngShot.made.w, h: pngShot.made.h } }));
+  check('the graph is not upscaled into a soft image',
+    !!pngShot.made && pngShot.made.w === pngShot.before.w, 'width changed');
+
   // ── who did it ────────────────────────────────────────────────────────────
   // "Who took the last one" is the most-asked question in a shared shop, and everything
   // downstream of accountability depends on the answer being recorded.

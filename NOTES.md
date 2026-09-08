@@ -2715,3 +2715,21 @@ does not read a column of dashes — and says once that `who` exists.
 
 Verified: 5 new store tests, 7 new end-to-end UI checks — 127 UI checks, 53 settings,
 20 security, 31 store tests.
+
+## v25.7 — the exported graph explains itself
+
+`graph png` was a raw dump of the canvas: whatever odd shape the split pane happened to
+be, with nothing in the picture saying what it was or whose shop it came from. It is the
+one artifact of this app that other people see, so it now carries a caption strip — the
+shop name, the view, the count, the date and the product name.
+
+The graph is drawn at its NATIVE size and never upscaled. Enlarging a 640px pane to
+something "shareable" only produces a soft 1600px image; `graph full` first is the way to
+get a big one, and the command now says so after saving. The caption scales with the
+image so it is not a hairline on a large export or a banner on a small one.
+
+Colours come from the live theme rather than being hardcoded, so an exported graph looks
+like the app the person is running.
+
+Verified: 2 new UI checks — the export is taller than the canvas (the strip is there) and
+exactly as wide (nothing was upscaled). 129 UI checks total.
