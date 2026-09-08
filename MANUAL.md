@@ -92,6 +92,13 @@ even after the item is deleted. A label stuck on a drawer points at one thing fo
 | `photo <id>` | attach a photo (stored in the database, not a folder) |
 | `undo` | reverse the last change |
 
+**Who did it.** `who Dave` tells the station who is at it — stored per device, so the
+bench tablet can be "bench" and the office PC whoever sits there. Every change made there
+is then logged under that name, and `recent by Dave` shows one person's work. There is no
+password: **anyone can type any name.** It answers "who took the last one", which is the
+question shops actually ask, and it is not evidence. `who -` clears it; changes still get
+recorded, just unattributed.
+
 **Undo is real.** Every change writes a log row, and anything with an undo payload can be
 reversed — including a whole spreadsheet import or a whole project build, which back out
 as ONE step rather than four hundred.
@@ -118,6 +125,8 @@ puts it all back along with the status change.
 | `remap` | renumber bins |
 | `health` | data integrity and storage status |
 | `recent` | the activity log |
+| `who <name>` | say who is at this station — every change here is logged under that name |
+| `recent by <name>` | what one person changed |
 
 ### Getting data in and out
 
@@ -246,8 +255,8 @@ Being straight about the limits is more useful than a longer list:
 - **Nothing here protects the file itself.** Whoever can read `invos.db` has your whole
   inventory. The database is not encrypted at rest — it is an ordinary SQLite file, which
   is exactly what makes it yours and portable.
-- **There is no audit of *who*.** The log records every change and can undo it, but it
-  cannot tell you which person made it.
+- **`who` is a claim, not a login.** Anyone can type any name, so the log tells you what a
+  cooperative shop did — not what an uncooperative one did.
 
 ### Sensible settings for a real shop
 
