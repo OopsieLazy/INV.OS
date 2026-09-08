@@ -2371,3 +2371,38 @@ parent-relative radius answers the question. The probe now says so where it prin
   distance, with the scale applied only to `r`. Converged to 307.6 vs 307.6 captured.
 
 Verified: 109 UI checks, 37 settings-audit checks, `go test ./internal/...`.
+
+## v25.0 — the spin comes back after you let go
+
+A drag has always stopped the auto-rotation. It stopped it for good: `gAutoRot=false` was
+set on every rotate drag and the only thing that set it back was a full graph reset. Two
+settings now decide what happens after the pointer comes up.
+
+- **`spin resumes in`** — 0-15s, default 4. Counted from the release. 0 is "never", the
+  old behaviour exactly.
+- **`spin follows drag`** — 0-100%, default 100%. The drift direction is a unit vector in
+  drag space, smoothed over the drag so one jittery last frame cannot decide it. At 0 the
+  drift is the plain horizontal spin it always was; at 100% letting go leaves the scene
+  turning the way you were turning it.
+
+The vertical component BOUNCES at the pitch clamp (+-1.4) rather than pressing against it.
+Without that, any drift with a vertical component slides to the stop within a few seconds
+and sits there, which reads as the rotation dying on its own.
+
+### The bug found on the way: `pause when idle` was killing the drift
+
+`gIdle()` parks the frame loop once `gAlpha<=0.015`, and it did not care whether the scene
+was rotating. `pause when idle` is on by default, so in 3D with the default auto-orbit the
+drift ran only until the layout settled — a second or two after opening the graph — and
+then stopped. The setting looked like it did nothing.
+
+A scene that is turning is not idle. `gIdle()` now also refuses to park while the drift is
+running or while a resume is still counting down (a countdown cannot fire with the loop
+parked, so that one would have silently never resumed). Turn `auto-orbit` to 0 and the
+graph parks exactly as before, so the power saving is still there for anyone who wants it.
+
+Note this does mean the default 3D graph now holds a frame loop instead of parking. That
+is the point of the setting being on; `auto-orbit 0` opts out.
+
+Verified: 109 UI checks, 45 settings-audit checks (6 new, covering stop-on-drag, resume,
+never, the tilted axis and level-when-off), `go test ./internal/...`.

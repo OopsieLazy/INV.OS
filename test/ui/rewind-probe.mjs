@@ -106,6 +106,38 @@ const direct = await page.evaluate(() => {
       ramp: +gOrbitRamp.toFixed(3) };
   });
 });
+// How STEADY is each node once it is fully on its orbit? On a circle at constant angular
+// speed the per-frame step length is constant, so stddev/mean of that step is a direct
+// measure of "sporadic". Measured over the last 50 frames, long after the handoff.
+{
+  const a = Math.max(0, frames.length - 51), b = frames.length - 1;
+  if (frames[a].ids === frames[b].ids) {
+    const n = frames[a].pos.length;
+    const jit = [], spd = [];
+    for (let i = 0; i < n; i++) {
+      const steps = [];
+      for (let f = a + 1; f <= b; f++) {
+        const p = frames[f - 1].pos[i], q = frames[f].pos[i];
+        steps.push(Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]));
+      }
+      const m = steps.reduce((x, y) => x + y, 0) / steps.length;
+      if (m < 1e-6) continue;
+      const sd = Math.sqrt(steps.reduce((x, y) => x + (y - m) ** 2, 0) / steps.length);
+      jit.push(sd / m); spd.push(m);
+    }
+    if (jit.length) {
+      const avg = v => v.reduce((x, y) => x + y, 0) / v.length;
+      jit.sort((x, y) => x - y);
+      console.log(`
+steadiness over the last 50 frames (${jit.length} moving nodes):`);
+      console.log(`  step jitter  mean ${(avg(jit) * 100).toFixed(1)}%  worst ${(jit[jit.length - 1] * 100).toFixed(1)}%` +
+        `   (0% = a perfectly steady circle)`);
+      console.log(`  step speed   mean ${avg(spd).toFixed(2)}  slowest ${Math.min(...spd).toFixed(2)}  fastest ${Math.max(...spd).toFixed(2)}` +
+        `   (spread here = orbits at different rates, by design)`);
+    }
+  }
+}
+
 console.log('direct read after the trace:');
 for (const d of direct) console.log('  ', JSON.stringify(d));
 

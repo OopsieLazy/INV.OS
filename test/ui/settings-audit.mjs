@@ -258,6 +258,75 @@ check('a configured device keeps its own settings', kept === 'amber', `theme is 
 await fresh.close();
 await freshCtx.close();
 
+// ── the drift comes back after a drag ────────────────────────────────────────
+// A drag has always stopped the auto-rotation; it used to stop it for good. These check
+// that `spin resumes in` brings it back, that 0 still means never, and that the drift
+// picks up the axis the drag was on.
+await run('graph inv');
+await run('cfgreset');
+await run('graph 3d');          // the drift and the rotate drag are 3D-only
+await page.waitForTimeout(400);
+
+async function dragCanvas(dx, dy) {
+  const box = await page.locator('#gcanvas').boundingBox();
+  // Start well away from the middle: the centre of the graph is the hub node, and a
+  // mousedown on a node drags the NODE. Rotating needs empty space.
+  const cx = box.x + box.width * 0.12, cy = box.y + box.height * 0.18;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  for (let i = 1; i <= 6; i++) await page.mouse.move(cx + dx * i / 6, cy + dy * i / 6);
+  await page.mouse.up();
+}
+
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('driftSpeed', 0.0022); });
+await dragCanvas(90, 0);
+const stopped = await page.evaluate(() => gAutoRot);
+check('a drag stops the auto-rotation', stopped === false, `gAutoRot=${stopped}`);
+
+await page.waitForTimeout(1600);
+const resumed = await page.evaluate(() => gAutoRot);
+check('the spin resumes after the delay', resumed === true, `gAutoRot=${resumed}`);
+
+const spun = await page.evaluate(async () => {
+  const y0 = gYaw;
+  await new Promise(r => setTimeout(r, 500));
+  return Math.abs(gYaw - y0);
+});
+check('and the scene is actually turning again', spun > 1e-4, `yaw moved ${spun.toFixed(5)}`);
+
+// 0 means never
+await page.evaluate(() => setCfg('spinResume', 0));
+await dragCanvas(90, 0);
+await page.waitForTimeout(1600);
+const never = await page.evaluate(() => gAutoRot);
+check('spin resumes in = never leaves it stopped', never === false, `gAutoRot=${never}`);
+
+// a vertical drag tilts the drift
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinAxis', 1); });
+await dragCanvas(0, -70);
+await page.waitForTimeout(1600);
+const tilt = await page.evaluate(async () => {
+  const p0 = gPitch, y0 = gYaw;
+  await new Promise(r => setTimeout(r, 600));
+  return { dp: Math.abs(gPitch - p0), dy: Math.abs(gYaw - y0), ax: gSpinAx, ay: gSpinAy };
+});
+check('a vertical drag tilts the drift onto that axis',
+  tilt.dp > 1e-4 && Math.abs(tilt.ay) > 0.5,
+  `pitch moved ${tilt.dp.toFixed(5)}, axis=(${tilt.ax.toFixed(2)},${tilt.ay.toFixed(2)})`);
+
+// at 0 the drift is level again no matter how it was dragged
+await page.evaluate(() => setCfg('spinAxis', 0));
+await dragCanvas(0, -70);
+await page.waitForTimeout(1600);
+const level = await page.evaluate(async () => {
+  const p0 = gPitch;
+  await new Promise(r => setTimeout(r, 600));
+  return Math.abs(gPitch - p0);
+});
+check('spin follows drag = off keeps the drift level', level < 1e-6, `pitch moved ${level.toFixed(6)}`);
+
+await run('cfgreset');
+
 check('no page errors during the audit', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

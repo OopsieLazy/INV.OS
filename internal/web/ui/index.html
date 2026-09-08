@@ -3411,6 +3411,13 @@ function gDims(){
 let gScale=1.6, gOX=0, gOY=0, gHover=null, gDrag=null, gPanning=false, gMoved=false, gLastXY=null;
 let g3d=false, gStyle="holo", gCores=true;  // 3D toggle + look + white node cores
 let gYaw=0.5, gPitch=-0.35, gAutoRot=true, gCamZ=520;
+/* Where the drift is heading, and when it is allowed to start again.
+
+   gSpinAx/gSpinAy is a unit vector in drag space: (1,0) is the plain horizontal spin the
+   graph has always had, and a drag sets it to the direction the pointer actually moved,
+   so letting go leaves the scene turning the way you were turning it. gSpinIdleAt is the
+   moment the pointer was released; `spin resumes in` is measured from there. */
+let gSpinAx=1, gSpinAy=0, gSpinIdleAt=0;
 const gc=$("gcanvas"), gpane=$("graphpane");
 
 let hudOn=true, sweepT=0;   // HUD frame + boot-sweep animation clock
@@ -3430,6 +3437,10 @@ const SETTINGS = [
   // The master speed from the orbit spec's tuning notes, which was buried in the code.
   {k:"orbitSpeed", label:"orbit speed",    min:0.2, max:3,   step:0.1,  def:1,    fmt:v=>v.toFixed(1)+"x"},
   {k:"orbitSize",  label:"orbit size",     min:0.3, max:1.5, step:0.05, def:1,    fmt:v=>v.toFixed(2)+"x"},
+  // Dragging stops the drift. It used to stop it for good — the only way back was to
+  // close the graph. These two decide what happens after you let go.
+  {k:"spinResume", label:"spin resumes in", min:0,  max:15,  step:0.5,  def:4,    fmt:v=>v===0?"never":v.toFixed(1)+"s"},
+  {k:"spinAxis",   label:"spin follows drag",min:0, max:1,   step:0.05, def:1,    fmt:v=>v===0?"off (level)":Math.round(v*100)+"%"},
   // How many parts the graph will draw. Worth exposing now that it scales: a slow
   // machine can dial it down, and a big shop can push it up and watch the frame cost.
   {k:"graphNodes", label:"graph nodes",    min:1000,max:50000,step:1000,def:20000,fmt:v=>v>=1000?(v/1000)+"k":String(v)},
@@ -3743,6 +3754,65 @@ function recaptureOrbit(n){
    a captured radius of 307 sat 450 from its project and never converged.
 
    gOrbitOrder is that parents-first order, built once when the orbits are captured. */
+/* One frame of drift. `spin follows drag` mixes between the level horizontal spin and
+   the direction of the last drag; at 0 this is exactly `gYaw += driftSpeed`, which is
+   what the graph did before.
+
+   The vertical part BOUNCES at the pitch limit instead of pressing against it. Pitch is
+   clamped to +-1.4 (past that you are looking at the scene edge-on and then upside down),
+   so a drift with any vertical component would otherwise slide to the stop within a few
+   seconds and sit there, which reads as the rotation dying on its own. */
+/* Remember which way the pointer is going, smoothed, so a single jittery frame at the
+   end of a drag does not decide the axis. Tiny movements are ignored: releasing after a
+   near-stationary drag should leave the axis alone, not point it at the last stray pixel. */
+function gSpinNote(dx, dy){
+  const m = Math.hypot(dx, dy);
+  if (m < 0.5) return;
+  const nx = dx/m, ny = dy/m;
+  gSpinAx += (nx - gSpinAx)*0.25;
+  gSpinAy += (ny - gSpinAy)*0.25;
+  const l = Math.hypot(gSpinAx, gSpinAy) || 1;
+  gSpinAx /= l; gSpinAy /= l;
+}
+
+function gDrift(){
+  const sp = cfg("driftSpeed");
+  if (!sp) return;
+  const follow = cfg("spinAxis");
+  const ax = 1 + (gSpinAx - 1)*follow, ay = gSpinAy*follow;
+  gYaw += sp*ax;
+  if (ay){
+    const want = gPitch + sp*ay*0.6;          // vertical is gentler; it runs out of room
+    if (want > 1.4 || want < -1.4) gSpinAy = -gSpinAy;
+    else gPitch = want;
+  }
+}
+
+/* Bring the drift back some seconds after the pointer was released. 0 means never, which
+   is the old behaviour: a drag stops the spin until the graph is reopened. */
+/* True while the drift is waiting out its delay after a drag. The frame loop parks itself
+   when nothing is moving, so without this the countdown would stop with it and the spin
+   would only come back the next time something else woke the graph. */
+/* `pause when idle` exists to stop burning frames on a picture that is not changing. A
+   drifting 3D scene IS changing, so it does not qualify — this used to park the loop the
+   moment the layout settled, which stopped the auto-orbit a second or two after opening
+   the graph and made it look like the setting did nothing. Turn `auto-orbit` down to 0
+   and the graph parks as before. */
+function gDrifting(){
+  return g3d && gAutoRot && cfg("driftSpeed") > 0;
+}
+
+function gSpinPending(){
+  return !gAutoRot && !!gSpinIdleAt && cfg("spinResume") > 0 && cfg("driftSpeed") > 0;
+}
+
+function gSpinMaybeResume(){
+  if (gAutoRot || gLastXY) return;
+  const wait = cfg("spinResume");
+  if (!wait || !gSpinIdleAt) return;
+  if (performance.now() - gSpinIdleAt >= wait*1000) gAutoRot = true;
+}
+
 function stepOrbits(dt, blend){
   if (blend === undefined) blend = 1;
   const byId = {};
@@ -4050,6 +4120,8 @@ function gIdle(){
       && gAlpha <= 0.015
       && !(gOrbit && (gView.kind==="galaxy" || gView.kind==="projects"))
       && !gLastXY && !gDrag && !gHover
+      && !gSpinPending()          // a resume that is due cannot fire with the loop parked
+      && !gDrifting()             // a scene that is turning is not idle
       && sweepDone();
 }
 
@@ -4085,7 +4157,8 @@ function gTick(){
         stepOrbits(cfg("orbitSpeed"), Math.max(0.035, t));
       }
       gAlpha = 0.001;
-      if (g3d && gAutoRot && !held) gYaw += cfg("driftSpeed");
+      if (!held) gSpinMaybeResume();
+      if (g3d && gAutoRot && !held) gDrift();
       gDraw();
       if (graphMode==="off" && !gPopped()){ gRAF=null; return; }
       gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
@@ -4099,7 +4172,8 @@ function gTick(){
     if (gAlpha<=0.015 && !gUserAdjusted) gFitView();
   }
   const idle = gIdle();
-  if (g3d && gAutoRot && !idle) gYaw+=cfg("driftSpeed");   // gentle drift (settings)
+  gSpinMaybeResume();
+  if (g3d && gAutoRot && !idle) gDrift();
   gDraw();
   if (graphMode!=="off" && (performance.now()&255)<20) updateHud();  // occasional stat refresh
   if (graphMode==="off" && !gPopped()){ gRAF=null; return; }
@@ -4588,6 +4662,7 @@ function graphHome(){          // recenter camera / view — the auto-home
   gUserAdjusted = false;
   gFitView();
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
+  gSpinAx=1; gSpinAy=0; gSpinIdleAt=0;
   gAlpha=Math.max(gAlpha,0.6);
 }
 async function graphSync(){
@@ -4632,7 +4707,7 @@ function bindGraphPointer(cv, win){
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
     else if (gPanning){
       gUserAdjusted=true;
-      if (g3d){ gAutoRot=false; gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
+      if (g3d){ gAutoRot=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
       else { gOX+=dx; gOY+=dy; }
     }
     gLastXY=[ox,oy];
@@ -4647,6 +4722,7 @@ function bindGraphPointer(cv, win){
       }
     }
     if (gOrbit && gDrag) recaptureOrbit(gDrag);   // carry on from where it was dropped
+    gSpinIdleAt = performance.now();     // `spin resumes in` counts from the release
     gDrag=null; gPanning=false; gLastXY=null; cv.style.cursor="grab";
   });
   cv.addEventListener("wheel", e=>{
@@ -4671,7 +4747,7 @@ function bindGraphPointer(cv, win){
     const dx=ox-gLastXY[0], dy=oy-gLastXY[1];
     if (Math.abs(dx)+Math.abs(dy)>5) gMoved=true;
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
-    else if (g3d){ gAutoRot=false; gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
+    else if (g3d){ gAutoRot=false; gSpinNote(dx,dy); gYaw+=dx*0.006; gPitch=Math.max(-1.4,Math.min(1.4,gPitch+dy*0.006)); }
     else { gOX+=dx; gOY+=dy; }
     gLastXY=[ox,oy];
     e.preventDefault();
@@ -4685,6 +4761,7 @@ function bindGraphPointer(cv, win){
       }
     }
     if (gOrbit && gDrag) recaptureOrbit(gDrag);
+    gSpinIdleAt = performance.now();
     gDrag=null; gPanning=false; gLastXY=null;
   });
 }
