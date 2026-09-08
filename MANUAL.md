@@ -190,24 +190,76 @@ in plain text where anything already on that network can read it. `-tls=false` o
 For a network you do not trust, start with `-token secret` and callers must present it.
 This is deliberately not an account system — it is a shop, not a bank.
 
-### What protects the station
-
-| | |
-|---|---|
-| encrypted shop access | on by default, self-signed, localhost excepted |
-| the token is never sent to the page | the app only ever learns *whether* one is set |
-| your file paths stay on this machine | remote devices see `invos.db`, not the full path |
-| cross-site writes are refused | a tab open on another site cannot change your stock |
-| the page cannot be framed | no clickjacking |
-| a strict content-security-policy | no external anything, and nothing can phone home |
-| rate limiting | a flood — or a device stuck in a retry loop — cannot take the station down |
-
-None of it is optional or hidden behind a flag. A rule that is only on when you remember
-to switch it on is a rule that is off.
+What defends the station once it is on the network is section 6.
 
 ---
 
-## 6. The graph
+## 6. Security
+
+The station is not on the internet, and this is not written as though it were. The threat
+worth planning for is the shop's own network: a laptop somebody brought in, a phone on the
+guest wifi, a machine that quietly picked something up. INV.OS must not be the way any of
+those reaches your inventory, and it must not hand out anything about the box it runs on.
+
+**Everything here is on by default.** A protection you have to remember to switch on is a
+protection that is off.
+
+### What is protected, and how
+
+| | |
+|---|---|
+| **Shop access is encrypted** | `https://` for anything off this machine. Localhost stays plain `http://` — it never touches a wire. |
+| **Your token never reaches the page** | The interface is only ever told *whether* one is set, never what it is. There is no field, anywhere, that carries it. |
+| **Tokens are compared in constant time** | A comparison that stops at the first wrong byte leaks its length and contents to anyone timing it. This one does not stop early. |
+| **Your file paths stay on this machine** | `db` shows you the full path. A tablet asking the same question gets `invos.db` — not your username and folder layout. |
+| **Cross-site writes are refused** | A tab open on another site cannot POST to the station and change your stock. Reads that change nothing are still allowed. |
+| **The page cannot be framed** | So it cannot be hidden under a decoy page and clicked through. |
+| **A strict content policy** | No CDN, no external font, no analytics, no `eval` — and nothing loaded in the page can send data anywhere but back here. |
+| **Flood protection** | A burst of hundreds of requests a second is refused and then forgiven. Normal heavy use — live search, paging, the graph — is unaffected. |
+| **Nothing is cached that shouldn't be** | The interface always revalidates, so a fixed build is never hidden behind a stale page. |
+
+### About the certificate
+
+No certificate authority will vouch for "the box on the bench at 192.168.1.40", at any
+price. So the station signs its own and keeps it beside the database.
+
+**Each device will warn you once.** Accept it, and from then on the connection is really
+encrypted. That warning is worth clicking through: without it, every quantity, every part
+number and your token itself cross the air in plain text, where anything already on that
+network can read them or alter a reply in flight.
+
+The certificate covers `localhost`, this machine's name, and every address it answers on.
+It renews itself when it nears expiry or when the station's address changes. The private
+key is readable only by the account that runs the station.
+
+### What this does NOT protect you from
+
+Being straight about the limits is more useful than a longer list:
+
+- **The certificate encrypts, but it cannot prove identity.** A device already on your
+  network could in principle pretend to be the station. Fixing that properly needs a
+  certificate authority a workshop does not have.
+- **The token is a door lock, not a user system.** It decides *whether* someone gets in,
+  never *who* they are. Everyone who has it has the same, complete access.
+- **Anyone who can reach the address can edit.** There are no permissions and no read-only
+  mode yet. Shop access is a decision about who is on your wifi.
+- **Nothing here protects the file itself.** Whoever can read `invos.db` has your whole
+  inventory. The database is not encrypted at rest — it is an ordinary SQLite file, which
+  is exactly what makes it yours and portable.
+- **There is no audit of *who*.** The log records every change and can undo it, but it
+  cannot tell you which person made it.
+
+### Sensible settings for a real shop
+
+1. Leave shop access **off** unless tablets actually need it (`server` to toggle it).
+2. If you do turn it on, set a token: `invos.exe -lan -token something-long`.
+3. Accept the certificate warning once per device, rather than turning `-tls` off.
+4. Put the station on the shop's own wifi, not the guest network.
+5. `backup` somewhere off this machine — most data loss is not an attacker.
+
+---
+
+## 7. The graph
 
 `graph` opens the node view beside the terminal. It is not decoration: it is how you see
 what is connected to what.
@@ -253,7 +305,7 @@ Settings are **per device**: the tablet at the bench and the office PC each keep
 
 ---
 
-## 7. Keyboard
+## 8. Keyboard
 
 ```
 tab / down          move down the rows          shift+tab / up   move up
@@ -273,7 +325,7 @@ pgup / pgdn         scroll
 
 ---
 
-## 8. Setting up a new shop
+## 9. Setting up a new shop
 
 1. `setup` — name the shop and rename the ten departments to match your space.
 2. `sections` — add and name the shelves inside each department.
@@ -287,15 +339,12 @@ clear.
 
 ---
 
-## 9. What it will not do
+## 10. What it will not do
 
 Honesty is more useful than a feature list:
 
-- **No accounts or permissions yet.** Anyone who can reach the address can edit. The token
-  is a door lock, not a user system, and it does not tell two people apart.
-- **The certificate is self-signed.** It encrypts, but it cannot prove the box is the box —
-  a device already on your network could in principle impersonate the station. Fixing that
-  properly needs a certificate authority a shop does not have.
+- **No accounts or permissions yet.** Anyone who can reach the address can edit, and the
+  log cannot say which person made a change. See section 6 for the full security limits.
 - **No check-out / custody yet** — you cannot record who took a tool and has not returned it.
 - **No supplier or reorder workflow yet** — no buy list grouped by supplier.
 - **Scanning is a command, not a mode** — no continuous scan loop or USB wedge support yet.
@@ -307,7 +356,7 @@ All of those are on the roadmap; see `ROADMAP-v2.md`.
 
 ---
 
-## 10. If something goes wrong
+## 11. If something goes wrong
 
 | symptom | what to do |
 |---|---|
