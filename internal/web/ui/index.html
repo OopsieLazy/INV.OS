@@ -1443,6 +1443,7 @@ const MENU = [
   {k:"rollback",d:"revert to an earlier saved state", run:"rollback"},
   {k:"install",d:"install as an app",                run:"install"},
   {k:"keys",   d:"keyboard shortcuts",               run:"keys"},
+  {k:"tutorial",d:"a one-minute guided tour",         run:"tutorial"},
 ];
 /* applyCfg makes a settings change take effect NOW.
    Before this, `cfgadj` special-cased exactly one key (launchZoom) and everything else
@@ -1821,7 +1822,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -2708,7 +2709,8 @@ async function exec(line){
     case "__fr_import": await finishFirstRun(); await exec("import"); return;
     case "__fr_go": {
       await finishFirstRun(); home();
-      print("ready. default sections are set — add an item: add 10k resistor x50 · rename shelves anytime: sections","g");
+      print("ready — default sections are set.","g");
+      tutorialStart();
       return;
     }
     case "__fr_fresh": {
@@ -2719,13 +2721,20 @@ async function exec(line){
       print("demo loaded — opening the project galaxy…","d");
       if (graphMode==="off") setGraph("split");
       g3d=true; setGraphView({kind:"galaxy"});
-      print("this is the GALAXY: 4 projects, bright stars = shared parts. try 'graph grow'. 'demo clear' to wipe.","d");
+      print("this is the GALAXY: 4 projects, bright stars = shared parts. 'demo clear' to wipe.","d");
+      tutorialStart();
       return;
     }
 
     case "setup": case "shop": setupWizard(0); return;
 
     case "welcome": case "firstrun": firstRun(); return;
+
+    case "tutorial": case "tour": {
+      if (rest.trim().toLowerCase()==="off"){ tut=null; print("tour off.","d"); return; }
+      tutorialStart();
+      return;
+    }
 
     case "demo": {
       const a=rest.trim().toLowerCase();
@@ -5573,6 +5582,89 @@ async function run(line){
   atHome=false;                 // output now on screen; Esc should clear it before touching the graph
   await exec(line);
   browseSel = -1;   // navRows() reads the DOM live, nothing else to track
+  tutorialSaw(line);            // the tour watches what actually got typed
+}
+
+/* ── the guided tour ───────────────────────────────────────────────────────
+   A blinking cursor is the best interface this app has and the worst first
+   impression it makes. Someone who opens it, sees a prompt and closes it never finds
+   out that it is fast.
+
+   So the tour makes them DO six things rather than reading about them. It watches the
+   command line — it does not drive it — because a tour that types for you teaches
+   nothing and a tour you cannot deviate from is a cage. Wander off, run other commands,
+   come back: the step is still there. `skip` leaves, `tutorial` re-enters, and it never
+   starts itself twice. */
+const TUTORIAL = [
+  { do:"find resistor",
+    why:"Search is the whole app. You never need the word 'find' — just type.",
+    ok:l => !/^\s*$/.test(l) && !/^(tutorial|skip|help|keys)\b/i.test(l),
+    done:"That is search. Any fragment, anywhere — a value, a package, a note, a bin." },
+  { do:"add 10k resistor x50",
+    why:"Adding picks the shelf and a free bin for you. x50 is the quantity.",
+    ok:l => /^\s*add\b/i.test(l),
+    done:"Filed, and given a C-ID that is never reused — labels stay true forever." },
+  { do:"take C-0001 5",
+    why:"Taking stock off the shelf is the thing you will do fifty times a day.",
+    ok:l => /^\s*(take|stock)\b/i.test(l),
+    done:"Every change is logged, with who did it if you have run `who`." },
+  { do:"map",
+    why:"The shelf tree — where everything physically lives.",
+    ok:l => /^\s*(map|bins|l|list|low)\b/i.test(l),
+    done:"Bin 1403 IS its own address: department 1, shelf 4, drawer 03." },
+  { do:"graph",
+    why:"The node view. Not decoration — it is how you see what connects to what.",
+    ok:l => /^\s*graph\b/i.test(l),
+    done:"Drag to rotate, scroll to zoom, click a node to drill in. `graph galaxy` for projects." },
+  { do:"undo",
+    why:"The last thing you did, reversed. Even a 400-row import undoes in one step.",
+    ok:l => /^\s*(undo|u)\b/i.test(l),
+    done:"That is the safety net. Nothing you do here is unrecoverable." },
+];
+let tut = null;
+
+function tutorialStart(resume){
+  tut = { i: 0 };
+  print("");
+  print("A QUICK TOUR — six things, about a minute.","w");
+  print("  Type what it asks. Wander off whenever you like; it waits.","d");
+  print("  `skip` leaves the tour · `tutorial` restarts it.","d");
+  tutorialAsk();
+}
+
+function tutorialAsk(){
+  if (!tut) return;
+  const step = TUTORIAL[tut.i];
+  print("");
+  print(`  ${tut.i+1}/${TUTORIAL.length}  ${step.why}`,"d");
+  print(`  try:  ${step.do}`,"c");
+}
+
+function tutorialSaw(line){
+  if (!tut) return;
+  const l = String(line||"").trim();
+  if (/^(skip|exit|quit)$/i.test(l)){
+    tut = null;
+    print("");
+    print("tour skipped — `tutorial` brings it back.","d");
+    return;
+  }
+  if (/^tutorial\b/i.test(l)) return;      // the command that (re)started it
+  const step = TUTORIAL[tut.i];
+  if (!step || !step.ok(l)) return;        // not this step yet; no nagging
+
+  print("");
+  print("  ✓ " + step.done,"g");
+  tut.i++;
+  if (tut.i >= TUTORIAL.length){
+    tut = null;
+    state.tutorialDone = true; save();
+    print("");
+    print("That is the tour. You now know more of this app than most people learn in a week.","w");
+    print("  `/` or F1 lists every command · `keys` for shortcuts · `who <name>` records who does what.","d");
+    return;
+  }
+  tutorialAsk();
 }
 
 

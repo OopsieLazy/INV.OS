@@ -136,7 +136,9 @@ Note: true multi-device usefulness needs Phase D.
 ═══════════════════════════════════════════════════════════════
 ## DEFERRED — onboarding polish
 ═══════════════════════════════════════════════════════════════
-- [ ] R11.4 interactive tutorial (`tutorial`): skippable/re-runnable 6-step walkthrough
+- [x] R11.4 interactive tutorial (`tutorial`): skippable/re-runnable 6-step walkthrough
+      DONE v25.8 — see M7. Promoted out of DEFERRED because onboarding is the single
+      biggest lever on whether a stranger becomes a user.
 - [ ] R11.5 contextual first-time hints (one dim tip per screen, never twice)
 - [ ] R11.6 getting-started progress checklist (milestones)
 
@@ -342,10 +344,10 @@ not by size:
       odd shape, and nothing in the image said what it was. It now carries the shop name,
       the view, the count and the product name. Every shared screenshot is now an ad that
       explains itself, which is the cheapest marketing this product will ever get.
-- [ ] **a guided first run** (R11.4, currently DEFERRED — promote it). The first sixty
-      seconds decide whether someone becomes a user. Everything else on this list is
-      wasted on a person who opened it, saw a blinking cursor and closed it. Six steps,
-      skippable, re-runnable.
+- [x] **a guided first run** — DONE v25.8. `tutorial`, six steps, offered automatically
+      after the "just start" and "explore the demo" doors. It WATCHES the command line
+      rather than driving it: wander off and the step waits, come back and it is still
+      there. `skip` leaves, `tutorial` returns. R11.4 in DEFERRED is now this.
 - [ ] **`cost` per item + valuation** (part of A3). "What is all this worth" is the
       question an OWNER asks, and the answer is needed for insurance and year-end. The
       `value` field is the part's rating (10kΩ), not money — this needs a real `cost`

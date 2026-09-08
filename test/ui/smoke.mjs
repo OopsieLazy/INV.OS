@@ -867,6 +867,43 @@ async function runChecks(page, t, consoleErrors) {
   check('the whole import undoes in one step', importUndone === beforeImport,
     `items ${importUndone}, expected back to ${beforeImport}`);
 
+  // ── the guided tour ───────────────────────────────────────────────────────
+  // A blinking cursor is this app's best interface and its worst first impression. The
+  // tour has to make someone DO things, wait when they wander off, and never nag.
+  console.log(String.fromCharCode(10) + 'guided tour');
+
+  await t.run('tutorial');
+  const tour0 = await t.screen();
+  check('the tour starts and asks for something concrete',
+    /QUICK TOUR/i.test(tour0) && /try:/i.test(tour0), tour0.slice(-300));
+
+  // Step 1 is a search — anything typed that is not a tour control counts.
+  await t.run('resistor');
+  await page.waitForTimeout(300);
+  check('typing advances the tour', /2\/6/.test(await t.screen()), (await t.screen()).slice(-300));
+
+  // Wandering off must not break it or nag: the step stays put.
+  const stepBefore = await page.evaluate(() => tut && tut.i);
+  await t.run('stats');
+  await page.waitForTimeout(300);
+  const stepAfter = await page.evaluate(() => tut && tut.i);
+  check('an unrelated command does not advance or nag the tour',
+    stepBefore === stepAfter, `step ${stepBefore} -> ${stepAfter}`);
+
+  await t.run('add Tour Widget @4140 x5');
+  await page.waitForTimeout(400);
+  check('doing the asked-for thing advances it', /3\/6/.test(await t.screen()),
+    (await t.screen()).slice(-300));
+
+  await t.run('skip');
+  await page.waitForTimeout(200);
+  check('skip leaves the tour', (await page.evaluate(() => tut)) === null &&
+    /tour skipped/i.test(await t.screen()), (await t.screen()).slice(-200));
+
+  await t.run('tutorial');
+  check('and it can be restarted', (await page.evaluate(() => tut && tut.i)) === 0);
+  await t.run('skip');
+
   // ── the shared screenshot ─────────────────────────────────────────────────
   // An exported graph is the one thing from this app that other people see, so it has to
   // carry its own context rather than being a pretty blob with no caption.

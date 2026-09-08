@@ -2733,3 +2733,47 @@ like the app the person is running.
 
 Verified: 2 new UI checks — the export is taller than the canvas (the strip is there) and
 exactly as wide (nothing was upscaled). 129 UI checks total.
+
+## v25.8 — the guided tour, a README, and a release checklist
+
+### `tutorial`
+
+A blinking cursor is this app's best interface and its worst first impression. Somebody
+who opens it, sees a prompt and closes it never finds out that it is fast.
+
+The tour makes them DO six things — search, add, take, map, graph, undo — rather than
+reading about them. The design decision that matters: **it watches the command line, it
+does not drive it.** A tour that types for you teaches nothing, and one you cannot deviate
+from is a cage. Run other commands mid-tour and the step simply waits; there is no nagging
+and no modal. `skip` leaves, `tutorial` returns, and it never starts itself twice.
+
+It is offered automatically after the two first-run doors that otherwise drop someone onto
+an empty screen ("just start" and "explore the demo").
+
+### README.md
+
+Written from MANUAL.md, aimed at a stranger on a repo page rather than at a user who
+already has it. Leads with why it exists — most shops are on a spreadsheet because the
+only rung above it is an ERP — and carries the **full "what it will NOT do" list**:
+no accounts, no custody yet, no purchasing beyond a buy list, no shipping, no accounting
+sync, no lot/serial/expiry, not encrypted at rest, LAN untested on a real floor.
+
+That list is a trust asset, not an apology. The audience this launches into has been
+burned, and stating the limits first is what makes the rest believable.
+
+### RELEASE.md
+
+A working checklist, plus the two decisions that were open:
+
+**The demo URL points at GitHub** — Pages for the demo, the repo for everything else. A
+`github.io` URL costs nothing, never expires, and this audience trusts it more than a
+landing page with a logo. Buy a domain when there is something to sell.
+
+**No mailing list yet.** It contradicts the pitch — the demo's whole claim is "no signup"
+and the first thing a visitor meets cannot be an email form. And GitHub already IS the
+mailing list: "Watch → Releases only" notifies people when you ship, with no privacy
+policy, no GDPR exposure, no sending reputation and no monthly fee.
+
+Verified: 6 new UI checks for the tour, including the two that matter — an unrelated
+command does not advance or nag it, and `skip` then `tutorial` restarts cleanly.
+135 UI checks, 53 settings, 20 security, 31 store.
