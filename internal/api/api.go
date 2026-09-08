@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/meta/{key}", s.putMeta)
 
 	s.routeMaintenance(mux)
+	s.routeLegacy(mux)
 	s.routeLAN(mux)
 
 	mux.Handle("/", s.ui)

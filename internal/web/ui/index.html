@@ -225,6 +225,7 @@
 <div id="printsheet"></div>
 <div id="toast"></div>
 <input id="photoinput" type="file" accept="image/*" capture="environment" style="display:none">
+<input id="legacyinput" type="file" accept=".json,.txt,application/json" style="display:none">
 <input id="sheetinput" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.xlsm,.xlsb,.ods,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">
 <div id="scanpane"><video id="scanvid" playsinline muted></video><div id="scanhint">point at a bin label — esc cancels</div></div>
 
@@ -517,6 +518,50 @@ async function renameSection(code, label){
   if (label) state.sections[code] = label; else delete state.sections[code];
   graphSync();
   return true;
+}
+
+/* Legacy import — moving a shop off the v20.2 single-file HTML build.
+
+   Staged in two steps on purpose. The first call is a DRY RUN: the server parses the
+   file and reports what it would write, including every row it cannot carry over, and
+   writes nothing. Only `import legacy confirm` commits. The old build was the only copy
+   of some shops' data, so "run it and see" is not an acceptable first move. */
+let legacyPending = null;
+
+async function runLegacyImport(src, dry){
+  let res;
+  try {
+    res = await DB.req("POST","/api/import/legacy", {...src, dry});
+  } catch(e){
+    legacyPending = null;
+    print("import failed: "+e.message,"a");
+    return;
+  }
+
+  if (dry){
+    legacyPending = src;
+    print(`this file holds ${res.items} items, ${res.projects} projects `
+        + `(${res.bomLines} BOM lines), ${res.sections} shelf names.`,"w");
+  } else {
+    legacyPending = null;
+    print(`imported ${res.items} items and ${res.projects} projects.`,"g");
+  }
+
+  if (res.skipped && res.skipped.length){
+    print(`  ${res.skipped.length} thing${res.skipped.length===1?"":"s"} cannot come across:`,"a");
+    for (const line of res.skipped.slice(0,8)) print("    "+line,"d");
+    if (res.skipped.length>8) print(`    …and ${res.skipped.length-8} more`,"d");
+  }
+
+  if (dry){
+    print("  C-IDs are kept exactly as they are, so printed drawer labels stay correct.","d");
+    print("  nothing has been written yet. to go ahead:  import legacy confirm","w");
+  } else {
+    await loadAll();
+    refreshHome(false);
+    graphSync();
+    print("  one step in the log — 'undo' backs the whole import out.","d");
+  }
 }
 
 /* finishFirstRun records that the shop has been set up. It lives in the database
@@ -1303,6 +1348,7 @@ const MENU = [
   {k:"export xlsx",d:"full inventory to Excel (.xlsx)", run:"export full"},
   {k:"graph png",d:"save the current graph as an image", run:"graph png"},
   {k:"import", d:"import a spreadsheet (xlsx/xls/ods/csv)", run:"import"},
+  {k:"import legacy", d:"move a shop off the old HTML build (v20.2 export or invos.db)", run:"import legacy"},
   {k:"template",d:"download a blank import template",  run:"template"},
   {k:"backup", d:"auto-backup to a file",            run:"backup"},
   {k:"health", d:"data integrity & storage status",  run:"health"},
@@ -3307,6 +3353,27 @@ async function exec(line){
 
     case "import": {
       const a=rest.trim().toLowerCase();
+
+      /* Moving a shop off the v20.2 HTML build. Deliberately two steps: the first run
+         only REPORTS what would happen — how many items and projects, and every row that
+         cannot come across — because an import that silently drops rows is worse than
+         one that refuses. Nothing is written until `import legacy confirm`. */
+      if (a==="legacy" || a.startsWith("legacy ")){
+        const arg = rest.trim().slice(6).trim();
+        if (arg.toLowerCase()==="confirm"){
+          if (!legacyPending){ print("nothing staged — run: import legacy <file>","a"); return; }
+          await runLegacyImport(legacyPending, false);
+          return;
+        }
+        if (arg){ await runLegacyImport({path:arg}, true); return; }
+        // no path: pick the .json the old download button produced. A .db has to come
+        // by path — a browser cannot read a SQLite file.
+        const inp=document.getElementById("legacyinput"); inp.value=""; inp.click();
+        print("pick the .json the old build exported.","d");
+        print("  an old invos.db must come by path:  import legacy C:/shop/invos.db","d");
+        return;
+      }
+
       if (a==="paste"){
         mode={type:"importpaste", buf:[]};
         setPS1("paste > ");
@@ -5631,6 +5698,20 @@ async function attachPhoto(cid, fileOrBlob){
     if (graphMode!=="off"){ gAlpha=Math.max(gAlpha,0.05); }
   }catch(e){ print("couldn't read that image.","a"); }
 }
+$("legacyinput").addEventListener("change", async e=>{
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const text = await f.text();
+  // A SQLite file picked here cannot be read in the browser; say so rather than
+  // failing with a parse error the user cannot act on.
+  if (text.startsWith("SQLite format 3")){
+    print("that is a SQLite database, which the browser cannot read.","a");
+    print("  give it to the server by path instead:  import legacy <full path>","d");
+    return;
+  }
+  await runLegacyImport({content:text}, true);
+});
+
 $("sheetinput").addEventListener("change", async e=>{
   const f=e.target.files&&e.target.files[0];
   if (!f) return;

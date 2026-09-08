@@ -2477,3 +2477,54 @@ velocity step the orbit handoff used to have, and it reads the same way. The rat
 in over 800ms on a smoothstep.
 
 Verified: 109 UI checks, 51 settings-audit checks, `go test ./internal/...`.
+
+## v25.3 — P9: legacy import (moving a shop off the HTML build)
+
+Until this existed, an inventory built in the v20.2 single-file app was stranded in a
+browser's localStorage and nobody — including us — could move a real shop onto the exe.
+
+### The old build wrote the same inventory four ways
+
+The download button produced the bare `state` object; `save()` produced a checksummed
+envelope `{v, ts, sum, data:"<state as a string>"}`; the sql.js mirror put one of those in
+`state.blob` of an invos.db; the blob server wrapped it again as `{blob, updated_at}`.
+`legacy.Parse` unwraps until it finds the object rather than asking which one you have,
+bounded at three deep so a hand-edited file cannot loop. Fields map 1:1 — the old
+`FIELDS` list is the same eleven columns the `items` table has.
+
+Format is decided by CONTENT, not extension: a SQLite file starts with the 15 bytes
+`SQLite format 3`, and old exports are routinely renamed by the time they reach us.
+
+### C-IDs are preserved, and that decides the rest of the design
+
+A printed label stuck on a drawer points at a number forever. So the import writes the
+original CIDs, and REFUSES when any of them already exists here rather than renumbering or
+merging — two drawers claiming one number is not something to resolve automatically. It
+names the first five clashes so the message is actionable.
+
+`sqlite_sequence` is bumped past the imported block, so a later `add` cannot be handed a
+number the import used. (`ON CONFLICT` cannot target `sqlite_sequence` — it has no declared
+unique constraint — so it is an UPDATE with an INSERT fallback.)
+
+### Two steps, because for some shops this is the only copy of the data
+
+`import legacy <file>` is a DRY RUN: the server parses and reports what it would write,
+including every row it cannot carry over, and writes nothing. Only `import legacy confirm`
+commits. Rows that cannot come across are always reported, never silently dropped — a BOM
+line pointing at a part that is not in the file, a shelf code that is not two digits, a
+duplicate CID, an item with no name.
+
+One transaction, one log entry, one undo — undoing removes the CID block, and the projects
+it created go with it.
+
+### Where it lives
+
+- `internal/legacy` — parsing only. It knows the old file format and no SQL.
+- `internal/store/legacy.go` — the transaction, and `LegacyBlob` for reading an old .db
+  (the one place this package opens a database it does not own: read-only, immutable URI).
+- `internal/api/legacy.go` — `POST /api/import/legacy`, taking `content` (the browser read
+  the .json) or `path` (a .db, which a browser cannot read at all).
+
+Verified: 6 new store tests (round-trip, CID preservation, no CID reuse, collision refusal,
+one-step undo, all four wrappers, rubbish rejected) and 9 new end-to-end UI checks driving
+the real command against the real server — 118 UI checks and 26 store tests in total.

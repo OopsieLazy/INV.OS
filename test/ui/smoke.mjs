@@ -12,7 +12,7 @@
 
 import { chromium } from 'playwright-core';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -850,6 +850,67 @@ async function runChecks(page, t, consoleErrors) {
   const importUndone = (await api.get('/api/stats')).items;
   check('the whole import undoes in one step', importUndone === beforeImport,
     `items ${importUndone}, expected back to ${beforeImport}`);
+
+  // ── legacy import (the v20.2 HTML build) ──────────────────────────────────
+  // The migration path off the old app. What matters is not that rows arrive but that
+  // the C-IDs arrive UNCHANGED: the labels are already stuck on the drawers.
+  console.log(String.fromCharCode(10) + 'legacy import');
+
+  // Forward slashes: the path goes through JSON to the server, and a Windows path
+  // full of backslashes is a stream of escape sequences by the time it arrives.
+  const legacyPath = join(tmpdir(), 'invos-legacy-' + Date.now() + '.json').split(String.fromCharCode(92)).join('/');
+  writeFileSync(legacyPath, JSON.stringify({
+    items: [
+      { cid: 90001, name: 'Legacy Sprocket', bin: 4110, qty: 9, min: 2, notes: 'from the old app' },
+      { cid: 90002, name: 'Legacy Bearing', bin: '4111', qty: '25', min: '5' },
+    ],
+    projects: [{
+      pid: 9001, name: 'Legacy Rig', status: 'building',
+      bom: [{ cid: 90001, need: 2 }, { cid: 77777, need: 1 }],
+    }],
+    sections: { '41': 'LEGACY SHELF' },
+  }));
+
+  const beforeLegacy = (await api.get('/api/stats')).items;
+  await t.run('import legacy ' + legacyPath);
+  await page.waitForTimeout(500);
+  const dry = await t.screen();
+  check('a legacy import reports before it writes',
+    /2 items/.test(dry) && /1 projects?/.test(dry), dry.slice(-400));
+  check('it names what cannot come across (a BOM line with no part)',
+    /cannot come across/i.test(dry) && /77777|C-7777/.test(dry), dry.slice(-400));
+  check('the dry run writes nothing',
+    (await api.get('/api/stats')).items === beforeLegacy,
+    `items moved to ${(await api.get('/api/stats')).items}, expected ${beforeLegacy}`);
+
+  await t.run('import legacy confirm');
+  await page.waitForTimeout(900);
+  const afterLegacy = await api.get('/api/stats');
+  check('confirming writes the rows', afterLegacy.items === beforeLegacy + 2,
+    `items ${beforeLegacy} -> ${afterLegacy.items}, expected +2`);
+
+  const legKept = await api.get('/api/items/90001');
+  check('the original C-ID survives (the drawer labels stay correct)',
+    legKept.cid === 90001 && legKept.name === 'Legacy Sprocket' && legKept.bin === 4110,
+    JSON.stringify(legKept));
+  const coerced = await api.get('/api/items/90002');
+  check('values the old build stored as strings land as numbers',
+    coerced.qty === 25 && coerced.min === 5 && coerced.bin === 4111,
+    JSON.stringify(coerced));
+
+  const legProj = (await api.get('/api/projects')).find(p => p.pid === 9001);
+  check('the project keeps its PID', !!legProj && legProj.name === 'Legacy Rig',
+    JSON.stringify(legProj || null));
+  const legBom = await api.get('/api/projects/9001/bom');
+  check('the dangling BOM line was dropped, the real one kept',
+    legBom.length === 1 && legBom[0].cid === 90001 && legBom[0].need === 2,
+    JSON.stringify(legBom));
+
+  await t.run('undo');
+  await page.waitForTimeout(600);
+  check('the whole legacy import undoes in one step',
+    (await api.get('/api/stats')).items === beforeLegacy,
+    `items ${(await api.get('/api/stats')).items}, expected back to ${beforeLegacy}`);
 
   // ── stale-data guard ──────────────────────────────────────────────────────
   // The service worker caches the app shell. It must NOT cache /api/, or the same

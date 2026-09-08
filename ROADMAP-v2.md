@@ -171,15 +171,19 @@ test rather than trusting the checkbox; three of them were not actually done).
 
 ★ NEXT — nothing here is a port; it is all "make it shippable".
 
-### P9 — legacy import  ★ recommended next (small, unblocks real use)
+### P9 — legacy import  [x] DONE v25.3
 Existing data is stranded in the HTML build's localStorage. Until this exists, nobody
 (including us) can move a real inventory onto the exe.
-- [ ] read a v20.2 browser export (the JSON the old `export`/`backup` produced)
-- [ ] read an old physical invos.db written by the sql.js mirror
-- [ ] `import legacy <file>` — map old fields, keep original C-IDs, one undo step
-- [ ] round-trip test: old export in, item/bin/qty/project counts match
+- [x] read a v20.2 browser export (the JSON the old `export`/`backup` produced)
+- [x] read an old physical invos.db written by the sql.js mirror
+- [x] `import legacy <file>` — map old fields, keep original C-IDs, one undo step
+- [x] round-trip test: old export in, item/bin/qty/project counts match
+Also handles the checksummed envelope and the blob-server response, because the old build
+wrote the same inventory in four shapes. Two-step: a dry run reports what would happen
+(and every row that cannot come across) and writes nothing until `import legacy confirm`.
 
-### P10 — packaging (you cannot sell an unpackaged exe)
+### P10 — packaging (you cannot sell an unpackaged exe)  ★ NEXT
+
 - [ ] version stamping (-ldflags) + `invos -version` in releases, not "dev"
 - [ ] cross-builds: windows/amd64, linux/amd64, linux/arm64 (Pi)
 - [ ] code signing for Windows, so it does not trip SmartScreen
@@ -195,6 +199,11 @@ on localhost. Before promising it to a shop:
 - [ ] what a tablet sees when the server goes away mid-edit
 - [ ] make the frames stop when idle (the graph redraws every frame because of drift;
       real battery cost on a tablet) — see NOTES v22.1
+      NOTE (v25.1): `pause when idle` no longer parks the loop while the drift is
+      running, because parking it was silently stopping the auto-orbit a second after
+      the graph opened. `auto-orbit 0` parks it. For a tablet the right answer is
+      probably to ship a shop default with auto-orbit off rather than to re-park a
+      scene that is visibly moving.
 - [ ] optional: mDNS/discovery so a phone finds the station without typing an IP
 
 ### P12 — SaaS

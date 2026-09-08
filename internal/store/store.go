@@ -228,6 +228,10 @@ type Store interface {
 	BulkUpdate(ctx context.Context, patches []ItemPatch, what string) (int, error)
 	MergeItems(ctx context.Context, keep, drop int64) error
 
+	// ImportLegacy writes a whole v20.2 inventory in one transaction and one undo
+	// step, keeping the original C-IDs so printed drawer labels stay correct.
+	ImportLegacy(ctx context.Context, snap LegacySnapshot) (LegacyResult, error)
+
 	// Backup writes a consistent copy of the whole database to destPath, safe to take
 	// while the shop is using it.
 	Backup(ctx context.Context, destPath string) error

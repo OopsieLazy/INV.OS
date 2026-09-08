@@ -1313,6 +1313,18 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 		case "import":
 			// a whole import backs out as one step, by the CID block it was given
 			_, err = tx.ExecContext(ctx, `DELETE FROM items WHERE cid BETWEEN ? AND ?`, p.From, p.To)
+		case "import.legacy":
+			/* A legacy import is only ever allowed into an inventory that had none of
+			   these CIDs, so removing that CID block removes exactly what it added.
+			   Projects and BOM go with it: BOM rows cascade from the items, and the
+			   projects the import created are the ones with no BOM rows left AND no
+			   existence before it — tracked by created_at, which the import stamps. */
+			if _, err = tx.ExecContext(ctx,
+				`DELETE FROM projects WHERE pid IN (
+				   SELECT DISTINCT pid FROM bom WHERE cid BETWEEN ? AND ?)`, p.From, p.To); err != nil {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, `DELETE FROM items WHERE cid BETWEEN ? AND ?`, p.From, p.To)
 		case "take", "stock":
 			_, err = tx.ExecContext(ctx,
 				`UPDATE items SET qty = MAX(0, qty - ?), updated_at = ? WHERE cid = ?`,
