@@ -2216,3 +2216,63 @@ genuinely fresh browser context inherits it, and a configured device keeps its o
 The new-device check uses a separate browser CONTEXT rather than a new page — pages in
 one context share localStorage, so a new page would have inherited the settings and
 proved nothing.
+
+---
+
+# v24.3 — the intermittent stutter was garbage collection
+
+"Sometimes laggy when the graph starts" needed measuring across repeated opens, not
+reasoning about: a hitch that happens one open in three is invisible in a single sample.
+`test/ui/frame-probe.mjs` records frame-to-frame intervals and attributes each frame to
+physics or draw.
+
+## What it showed
+    run  p50    p95    worst   stutters>32ms
+      1  13.3   14.8   79.8        1          <- first open, cold
+      2  13.3   14.4   15.5        0
+      3  13.3   14.6   15.5        0
+      5  13.3   16.8   47.9        1          <- 40ms of "physics", mid-run
+
+A 40ms physics frame in the middle of a run, on data that took 2.5ms a frame either side
+of it. Same code, same nodes. That is not the simulation being slow — that is the
+collector running, charged to whatever happened to be executing.
+
+## The garbage
+`gDraw3DShapes` allocated, EVERY FRAME: a Map, a projection object per node, a wrapper
+object per edge and per node for depth sorting, and six arrays. At 3,000 nodes that is
+around 6,000 objects a frame — roughly 360,000 a second at 60fps.
+
+Now nothing is allocated per frame. `projectInto()` writes into a result object kept on
+the node, sort keys live on the objects being sorted, the draw-order arrays are reused
+and sorted in place, and the comparators are hoisted (an arrow function passed to sort()
+is itself an allocation).
+
+Result at 400 items: stutters gone from every run after the first.
+
+## Then the draw itself
+At 3,000 nodes frames were still 22ms — about 45fps — while the measured JS was only
+7ms. The rest was canvas rasterising 3,000 shapes.
+
+- Shadow blur was being set PER NODE, and it is the most expensive thing canvas does.
+  Above 400 nodes the glow is now kept for hubs and whatever is hovered, and dropped for
+  the rest, where hundreds of overlapping halos read as haze anyway.
+- The pixel renderer took over at 4,000 nodes, which was too late. Measured at 3,000:
+  shapes 22ms a frame, pixels 13.3ms. Threshold lowered to 1,500. Checked visually at
+  2,000 — hubs still draw as labelled circles, parts as stars, structure intact.
+
+At 3,000 items: p50 22ms -> 13.3ms, and five consecutive runs with ZERO stutters.
+
+## The first open is still cold, and that is a different thing
+The very first open after a page load costs one long frame — the code has never run, the
+canvas has no backing store, and 3,000 node objects have to be built. `warmGraph()` now
+runs the simulation and the drawing on throwaway data during boot, and pre-sizes the
+canvas, which halved the first frame's physics (30.6ms -> 15.0ms). The rest is genuine
+one-time setup, paid once per page load rather than repeatedly.
+
+Worth recording: my first theory WAS this cold-start effect, and I "fixed" it before
+measuring whether it was the thing being reported. It was not — the recurring mid-run
+pauses were, and they had a completely different cause. The warmup stayed because it
+helps, but it was solving the wrong problem first.
+
+## Verified
+108 UI checks, 36 settings checks, orbit and rewind probes unchanged.
