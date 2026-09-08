@@ -203,6 +203,53 @@ Note: true multi-device usefulness needs Phase D.
 - [ ] optional turnkey: pre-imaged Raspberry Pi
 
 ═══════════════════════════════════════════════════════════════
+## AUTHENTICATION — WHAT IT IS AND WHAT IT COULD BE (added 2026-09-08)
+═══════════════════════════════════════════════════════════════
+
+### What exists now (v26.2)
+
+One shared key, gating the network only. Loopback is exempt because whoever is at the
+station can read the database file anyway. A device holds the key in its own storage and
+sends it as a header; `key <value>` sets it and verifies before confirming.
+
+It decides **whether** somebody gets in, never **who** they are. `who <name>` records who
+did something, and is a claim rather than a credential.
+
+### Where injection stands
+
+Audited by attack, not by reading — `test/ui/injection-probe.mjs`, 11 checks, six payloads
+in every typable field rendered through every screen. Nothing executes. The UI has one
+`esc()` and builds DOM with `textContent` everywhere else; the SQL sort column is an
+allowlist and every value is parameterised. **This is not the weak part.**
+
+### The next rungs, in the order they are worth doing
+
+- [ ] **A1 — per-device keys instead of one shared key.** One secret for the whole shop
+      cannot be revoked for one lost tablet without re-keying every other device. Issuing
+      a key per device makes "that phone left with someone" a one-line fix. Small, and it
+      is the first thing a real shop will ask for.
+- [ ] **A2 — a pairing flow.** Typing a long key on a tablet keyboard is where people give
+      up and pick something short. Show a QR on the station containing a one-time code,
+      scan it, the device gets a key. The scanner already exists.
+- [ ] **A3 — rate-limit and back off failed keys specifically.** The global limiter would
+      let a patient attacker grind a short key. Failed attempts should slow down hard and
+      say so, which also makes a shop's own typo obvious rather than mysterious.
+- [ ] **A4 — read-only devices.** A tablet in the corridor that can look up a bin but not
+      change a quantity covers a real case and needs no account system — just two kinds of
+      key.
+- [ ] **A5 — real accounts (Phase D).** Only when `who` genuinely has to be trustworthy:
+      a dispute, an auditor, or a customer whose insurer asks. It brings sessions, password
+      storage, reset flows and lockout policy — a large surface, and everything above
+      delivers most of the value without it.
+
+### The line
+
+Do not build a login because it sounds more secure. A shop is not a bank, and every step
+toward accounts is a step toward the setup burden that keeps people on spreadsheets. Build
+A1 and A2 because they solve real shop problems — a lost tablet, a keyboard nobody wants
+to type on. Build A5 only when somebody's actual situation requires it.
+
+═══════════════════════════════════════════════════════════════
 ## FINDING AND STORING PARTS (added 2026-09-08)
 ═══════════════════════════════════════════════════════════════
 
