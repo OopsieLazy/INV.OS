@@ -242,10 +242,106 @@ invalidate all of it is to get one shop running P9's legacy import on real data.
 ### `html-demo` — the free demo (FROZEN)
 Frozen at tag `html-demo-v20.2` = the full single-file HTML app as it shipped.
 Public-facing: upload for feedback/views. No new features land here.
-- [ ] D1 strip-down pass before publishing: decide what the demo does NOT get
-      (candidates: photos, cycle-count, physical .db mirror, server sync, galaxy)
-- [ ] D2 demo-mode guard: seed data only, cap item count, "get the full version" nudge
-- [ ] D3 landing page + short screen-capture clip
+
+**Revised 2026-09-08 — D1 as originally written is probably wrong.** "Decide what the demo
+does NOT get" builds crippleware, and crippleware converts badly: someone who bounces off
+a demo does not come back to find out whether the paid one is better. Worse, the strongest
+hook on the whole product — the galaxy graph — was on the list to remove.
+
+The demo should be FULLY FEATURED and LIMITED IN DATA. The reason to buy is then not "the
+demo is missing things" but the true reason: **it is yours, it runs on your machine, it
+holds your whole shop, and nobody can take it away.** That is an argument that survives
+contact with a sceptical buyer; "we removed photos" is not.
+
+- [ ] D1 demo posture: everything on, nothing removed. Cap at ~150 items, seeded, and
+      say so plainly. Nothing hidden behind a "pro" label.
+- [ ] D2 demo guard: seed on load, cap the item count, and one honest line about what the
+      full version gives you — not a nag, and never a modal over the first screen
+- [ ] D3 landing page + a short screen-capture clip (the galaxy graph is the clip)
+- [ ] D4 the demo is a REAL build, not a mock: the browser build already stores to
+      localStorage, so a visitor's tinkering survives a refresh. That is the moment it
+      stops feeling like a screenshot.
+- [ ] D5 `feedback` command in the demo only — one keypress from the thing they are
+      annoyed by to telling us about it. The demo exists to collect this.
+
+═══════════════════════════════════════════════════════════════
+## MARKETING AS PART OF THE PRODUCT (added 2026-09-08)
+═══════════════════════════════════════════════════════════════
+
+Stated goal: marketing should be built INTO the product rather than bolted on after it is
+finished. That is the right instinct, and for this product it is unusually achievable —
+because the things that sell it are things it already does.
+
+**The order matters, though: publish the demo NOW, not when the product is done.** The ERP
+section above is reasoning from forum posts, which is a hypothesis. Every week the demo is
+unpublished is a week of building on a guess. The demo is the cheapest evidence available
+and it already exists, frozen and working.
+
+### M1 — the artifacts the product already makes
+The app has three things that are marketing material for free, and none of them need a
+marketing department:
+
+- [ ] **`graph png`** already exists. The galaxy view is the hook — it is the thing that
+      makes someone stop scrolling, and it is generated from real inventory. Make the
+      export shareable-shaped (sensible size, the shop name, a small wordmark) and it
+      becomes a picture people post for us.
+- [ ] **the report / `export`** — a shop that prints a valuation or a low-stock list is
+      handing the app to whoever else reads it. Put a discreet footer line on printed
+      output; a label sheet is seen by everyone who walks past the drawers.
+- [ ] **QR labels** are physically in the shop, on every drawer, forever.
+
+### M2 — the demo IS the pitch
+- [ ] no signup, no email wall, no "book a demo". The entire competitive claim is
+      "instant, yours, no account" — a signup form contradicts the product in the first
+      five seconds
+- [ ] deep links that open a specific view (`?demo=galaxy`) so a post can point at the
+      thing being talked about
+- [ ] "download the real one" is one line in the app, not a banner
+
+### M3 — the writing already exists, publish it
+- [ ] `MANUAL.md` is the docs site. It was written to be read by a user, not a developer.
+- [ ] `NOTES.md` is a changelog with REASONING in it — "we measured, it was garbage
+      collection, here are the numbers". For a technical audience that is more persuasive
+      than any feature page, and it is already written as a side effect of working.
+- [ ] the honest limits sections (MANUAL §6 and §10) are a trust asset. Publish them
+      as-is. Saying what it will not do is what makes the rest believable.
+
+### M4 — know what happens in the DEMO, and nothing in the product
+A real distinction that must not blur:
+
+- [ ] the demo is a public web page: basic analytics there are fine and necessary
+- [ ] **the product ships with no telemetry, ever.** "No internet, no account, no phoning
+      home" is a stated selling point; adding analytics to the exe would sell out the
+      thing being sold. If usage data is ever needed from the product it must be an
+      explicit, off-by-default, user-initiated export.
+- [ ] measure the one thing that matters in the demo: did they type a command? People who
+      type are people who understood it.
+
+### M5 — the migration story is the sales pitch
+P9 (legacy import) is a feature AND the whole argument to a spreadsheet shop:
+- [ ] a page that is literally "bring your spreadsheet" — `template`, `import`, done in
+      five minutes, with the dry-run screenshot showing it refuses to guess
+- [ ] the ladder from THE ERP QUESTION is the pricing/positioning story: import → labels
+      → who has what → buy list → valuation
+
+### M6 — where these people actually are
+- [ ] the forums the ERP observation came from. Not ads — answering the "how do you track
+      inventory" threads with the demo link is on-topic and free.
+- [ ] r/functionalprint, maker and machinist communities: the galaxy screenshot plus
+      "one exe, no account, your data" is the whole post
+- [ ] a build log is a genuine artifact: the graph performance work (1702ms → 17ms), the
+      GC hunt, the orbit maths. That audience buys tools from people who work like that.
+
+### The sequencing recommendation
+
+1. **Publish the demo now** (D1-D3), with the revised posture above. It is frozen and
+   working; the only work is the guard and a page.
+2. **Keep shipping `main`.** The demo does not block it and never should.
+3. **Do B2 next in the product** — attributed logging. Cheap, and "who took the last one"
+   is the most relatable feature to describe to a shop.
+4. **Then C1 scanning.** It is the step a spreadsheet cannot take, which makes it the
+   most persuasive thing to film.
+5. Let what the demo teaches reorder everything below that.
 
 ### `main` — INV.OS the product (the exe)
 Single Go binary. Embeds the UI, owns a real SQLite database, serves itself on the
