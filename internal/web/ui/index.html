@@ -3420,6 +3420,9 @@ let gYaw=0.5, gPitch=-0.35, gAutoRot=true, gCamZ=520;
 let gSpinAx=1, gSpinAy=0, gSpinIdleAt=0;
 const PITCH_HOME = -0.35;     // the tilt a fresh graph opens at
 let gHoming = false;          // easing the tilt back after a drag
+let gHomeFrom = 0, gHomeT = 0;
+const HOME_MS = 2600;         // deliberately unhurried; see gDrift
+let gSpinFade = 1;            // 0..1, eases the spin back in instead of snapping it on
 let gDriftT = 0;              // timestamp of the last drift step, for time-based motion
 const gc=$("gcanvas"), gpane=$("graphpane");
 
@@ -3443,11 +3446,19 @@ const SETTINGS = [
   // Dragging stops the drift. It used to stop it for good — the only way back was to
   // close the graph. These two decide what happens after you let go.
   {k:"spinResume", label:"spin resumes in", min:0,  max:15,  step:0.5,  def:4,    fmt:v=>v===0?"never":v.toFixed(1)+"s"},
-  {k:"spinAxis",   label:"spin follows drag",min:0, max:1,   step:0.05, def:1,    fmt:v=>v===0?"off (level)":Math.round(v*100)+"%"},
-  // Auto-home eases the TILT back to level when the spin resumes and leaves the yaw
-  // alone, because yaw is the spin axis: winding it back to a fixed angle would read as
-  // the scene rewinding. Full recentre is still `h` / `graph home`.
-  {k:"spinHome",   label:"auto-home on resume",min:0,max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
+  /* What the spin does when it comes back, as ONE choice rather than two settings that
+     could contradict each other.
+
+     auto-home   — eases the TILT back to level and spins the way it always does. The yaw
+                   is left alone: yaw is the spin axis, so winding it back to a fixed
+                   angle would read as the scene rewinding.
+     follow drag — picks up the direction the drag was going, so it can come back turning
+                   left-to-right, right-to-left or vertically depending on how you left it.
+
+     They used to be separate, and the combination was the worst of both: homing forced
+     the axis level while it ran, then handed control back to the drag axis the instant it
+     finished, so the direction changed abruptly at the end of every home. */
+  {k:"spinAfter",  label:"after a drag",   min:0,   max:1,   step:1,    def:0,    fmt:v=>v?"follow the drag":"auto-home"},
   // How many parts the graph will draw. Worth exposing now that it scales: a slow
   // machine can dial it down, and a big shop can push it up and watch the frame cost.
   {k:"graphNodes", label:"graph nodes",    min:1000,max:50000,step:1000,def:20000,fmt:v=>v>=1000?(v/1000)+"k":String(v)},
@@ -3803,16 +3814,21 @@ function gDrift(){
   const k = dt/16.7;                      // 1.0 at 60fps, and the units stay unchanged
 
   if (gHoming){
-    /* Ease the tilt home. Exponential, so it slows into place instead of arriving at
-       full speed and stopping dead — and it is framed in dt too, or the ease itself
-       would be as frame-rate dependent as the thing it is smoothing. */
-    const e = 1 - Math.pow(0.001, dt/1000);    // ~99.9% of the way home in one second
-    gPitch += (PITCH_HOME - gPitch)*e;
-    if (Math.abs(gPitch - PITCH_HOME) < 0.002){ gPitch = PITCH_HOME; gHoming = false; }
+    /* Ease the tilt home over a fixed span with SMOOTHERSTEP, which leaves at zero speed
+       and arrives at zero speed. The first version was exponential: that starts at full
+       speed, so the home began with a visible lurch and then crept the last of the way.
+       This one has no jerk at either end, and at 2.6s it is slow enough to read as the
+       scene settling rather than as a correction being applied to it. */
+    gHomeT = Math.min(1, gHomeT + dt/HOME_MS);
+    const t = gHomeT*gHomeT*gHomeT*(gHomeT*(gHomeT*6 - 15) + 10);
+    gPitch = gHomeFrom + (PITCH_HOME - gHomeFrom)*t;
+    if (gHomeT >= 1){ gPitch = PITCH_HOME; gHoming = false; }
   }
 
-  const follow = gHoming ? 0 : cfg("spinAxis");
-  let ax = 1 + (gSpinAx - 1)*follow, ay = gHoming ? 0 : gSpinAy*follow;
+  /* In auto-home mode the axis is level for good — not just while the ease runs. Handing
+     the drag axis back at the end of the home was a direction change out of nowhere. */
+  const follow = (gHoming || !cfg("spinAfter")) ? 0 : 1;
+  let ax = 1 + (gSpinAx - 1)*follow, ay = gSpinAy*follow;
 
   /* Vertical rotation is damped to 0.6 because pitch has far less room than yaw. That
      alone made a mostly-vertical drift visibly SLOWER than a level one — a straight-up
@@ -3821,7 +3837,13 @@ function gDrift(){
   const mag = Math.hypot(ax, ay*0.6) || 1;
   ax /= mag; ay /= mag;
 
-  gYaw += sp*ax*k;
+  /* Ease the rate in. Resuming used to go from a dead stop to the full rate between one
+     frame and the next, which is a velocity step — the same discontinuity the orbit
+     handoff had, and it reads the same way. */
+  gSpinFade = Math.min(1, gSpinFade + dt/800);
+  const f = gSpinFade*gSpinFade*(3 - 2*gSpinFade);
+
+  gYaw += sp*ax*k*f;
   if (ay){
     /* Fade the vertical component out as the tilt runs out of room, rather than
        reversing at the stop. A bounce is an instant change of direction — the jankiest
@@ -3829,7 +3851,7 @@ function gDrift(){
     const head = (1.4 - Math.abs(gPitch))/0.35;
     const fade = Math.max(0, Math.min(1, head));
     if (fade <= 0) gSpinAy = 0;
-    gPitch += sp*ay*0.6*k*fade;
+    gPitch += sp*ay*0.6*k*fade*f;
   }
 }
 
@@ -3858,7 +3880,10 @@ function gSpinMaybeResume(){
   if (performance.now() - gSpinIdleAt < wait*1000) return;
   gAutoRot = true;
   gDriftT = 0;                        // start the clock fresh, not from before the drag
-  if (cfg("spinHome")) gHoming = true;
+  gSpinFade = 0;                      // and ease the rate up rather than snapping it on
+  if (!cfg("spinAfter") && Math.abs(gPitch - PITCH_HOME) > 0.002){
+    gHoming = true; gHomeFrom = gPitch; gHomeT = 0;
+  }
 }
 
 function stepOrbits(dt, blend){
@@ -4710,7 +4735,7 @@ function graphHome(){          // recenter camera / view — the auto-home
   gUserAdjusted = false;
   gFitView();
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
-  gSpinAx=1; gSpinAy=0; gSpinIdleAt=0; gHoming=false; gDriftT=0;
+  gSpinAx=1; gSpinAy=0; gSpinIdleAt=0; gHoming=false; gHomeT=0; gDriftT=0; gSpinFade=1;
   gAlpha=Math.max(gAlpha,0.6);
 }
 async function graphSync(){

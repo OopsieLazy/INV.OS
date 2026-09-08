@@ -2441,3 +2441,39 @@ and 3. The one 70.7ms frame is the first frame of the first open — graph const
 pre-existing.
 
 Verified: 109 UI checks, 50 settings-audit checks (5 new), `go test ./internal/...`.
+
+## v25.2 — one setting for what happens after a drag, and a home you can watch
+
+Two settings covering the same moment could contradict each other, and the combination was
+the worst case: `auto-home on resume` forced the axis level while the ease ran, then handed
+control back to `spin follows drag` the instant it finished — so the direction changed
+abruptly at the end of every single home. That is the "not consistent with directioning"
+jank. They are now one choice:
+
+**`after a drag`** — `auto-home` (default) or `follow the drag`.
+
+- *auto-home* eases the TILT back to level and spins the way it always does. Level for
+  good, not just while the ease runs, so there is no handover and no direction change.
+  The yaw is deliberately left alone: yaw is the spin axis, and winding it back to a fixed
+  angle reads as the scene rewinding. Full recentre is still `h` / `graph home`.
+- *follow the drag* is the old behaviour — it comes back turning whichever way you left it,
+  left-to-right, right-to-left or vertically.
+
+### The ease itself
+
+Was exponential over ~1s. Exponential starts at FULL speed, so the home began with a lurch
+and then crept the last of the way in. It is **smootherstep over 2.6s** now, which leaves
+at zero speed and arrives at zero speed — no jerk at either end, and slow enough to read as
+the scene settling rather than as a correction being applied to it.
+
+The audit measures the shape, not just the endpoint: it samples pitch every frame for the
+whole ease and asserts the first and last few frames are under 25% of peak speed, and that
+the ease runs more than 60 frames.
+
+### And the spin no longer snaps on
+
+Resuming went from a dead stop to the full rate between one frame and the next — the same
+velocity step the orbit handoff used to have, and it reads the same way. The rate now eases
+in over 800ms on a smoothstep.
+
+Verified: 109 UI checks, 51 settings-audit checks, `go test ./internal/...`.

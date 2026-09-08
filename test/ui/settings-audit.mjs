@@ -278,7 +278,7 @@ async function dragCanvas(dx, dy) {
   await page.mouse.up();
 }
 
-await page.evaluate(() => { setCfg('spinResume', 1); setCfg('driftSpeed', 0.0022); });
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('driftSpeed', 0.0022); setCfg('spinAfter', 1); });
 await dragCanvas(90, 0);
 const stopped = await page.evaluate(() => gAutoRot);
 check('a drag stops the auto-rotation', stopped === false, `gAutoRot=${stopped}`);
@@ -302,7 +302,7 @@ const never = await page.evaluate(() => gAutoRot);
 check('spin resumes in = never leaves it stopped', never === false, `gAutoRot=${never}`);
 
 // a vertical drag tilts the drift
-await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinAxis', 1); });
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinAfter', 1); });
 await dragCanvas(0, -70);
 await page.waitForTimeout(1600);
 const tilt = await page.evaluate(async () => {
@@ -314,25 +314,26 @@ check('a vertical drag tilts the drift onto that axis',
   tilt.dp > 1e-4 && Math.abs(tilt.ay) > 0.5,
   `pitch moved ${tilt.dp.toFixed(5)}, axis=(${tilt.ax.toFixed(2)},${tilt.ay.toFixed(2)})`);
 
-// at 0 the drift is level again no matter how it was dragged. auto-home has to be off
-// for this one: homing also moves the pitch, and moving it is the whole point of it.
-await page.evaluate(() => { setCfg('spinAxis', 0); setCfg('spinHome', 0); });
+// in auto-home mode the drift is level no matter how it was dragged. Give the home ease
+// time to finish first — it moves the pitch on purpose, and that is a different check.
+await page.evaluate(() => setCfg('spinAfter', 0));
 await dragCanvas(0, -70);
-await page.waitForTimeout(1600);
+await page.waitForTimeout(1200 + 2600 + 600);      // resume delay + the full home ease
 const level = await page.evaluate(async () => {
   const p0 = gPitch;
   await new Promise(r => setTimeout(r, 600));
-  return Math.abs(gPitch - p0);
+  return { moved: Math.abs(gPitch - p0), homing: gHoming };
 });
-check('spin follows drag = off keeps the drift level', level < 1e-6, `pitch moved ${level.toFixed(6)}`);
+check('auto-home mode keeps the drift level once it is home',
+  level.moved < 1e-6 && !level.homing, `pitch moved ${level.moved.toFixed(6)}, homing=${level.homing}`);
 
 // auto-home: the tilt comes back to level, the yaw is left where it is
-await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinHome', 1); });
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinAfter', 0); });
 await dragCanvas(0, -70);
 const tilted = await page.evaluate(() => gPitch);
 const home = await page.evaluate(async () => {
   const y0 = gYaw;
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 4200));     // resume delay + HOME_MS + slack
   return { pitch: gPitch, yawMoved: Math.abs(gYaw - y0), homing: gHoming };
 });
 check('auto-home brings the tilt back to level',
@@ -341,10 +342,34 @@ check('auto-home brings the tilt back to level',
 check('auto-home leaves the yaw alone (it keeps spinning, not rewinding)',
   home.yawMoved > 1e-4, `yaw moved ${home.yawMoved.toFixed(5)}`);
 
+/* The SHAPE of the home ease, not just where it ends up. Smootherstep leaves at zero
+   speed and arrives at zero speed, so the pitch velocity should start near zero, rise to
+   a peak in the middle and come back to zero — with no step at either end. The first
+   version was exponential: full speed on frame one, which is the lurch that was visible. */
+await page.evaluate(() => { setCfg('spinResume', 1); setCfg('spinAfter', 0); });
+await dragCanvas(0, -80);
+const ease = await page.evaluate(async () => {
+  while (!gHoming) await new Promise(r => requestAnimationFrame(r));
+  const p = [];
+  while (gHoming && p.length < 400) { p.push(gPitch); await new Promise(r => requestAnimationFrame(r)); }
+  const v = [];
+  for (let i = 1; i < p.length; i++) v.push(Math.abs(p[i] - p[i - 1]));
+  const peak = Math.max(...v);
+  const head = v.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
+  const tail = v.slice(-3).reduce((a, b) => a + b, 0) / 3;
+  return { frames: p.length, peak, head, tail };
+});
+check('the home ease starts and ends at rest (no lurch, no dead stop)',
+  ease.head < ease.peak * 0.25 && ease.tail < ease.peak * 0.25,
+  `${ease.frames} frames, start ${(ease.head / ease.peak).toFixed(2)} and end ` +
+  `${(ease.tail / ease.peak).toFixed(2)} of peak speed`);
+check('the home ease is slow enough to read as settling',
+  ease.frames > 60, `${ease.frames} frames`);
+
 // off, the tilt stays where it was dragged
-await page.evaluate(() => setCfg('spinHome', 0));
+await page.evaluate(() => setCfg('spinAfter', 1));
 await dragCanvas(0, -70);
-await page.waitForTimeout(2500);
+await page.waitForTimeout(4200);
 const stayed = await page.evaluate(() => gPitch);
 check('auto-home off leaves the tilt where you put it',
   Math.abs(stayed - (-0.35)) > 0.05, `pitch ${stayed.toFixed(3)}`);
@@ -352,7 +377,7 @@ check('auto-home off leaves the tilt where you put it',
 /* The rate must not depend on which way you left it pointing. Vertical rotation is
    damped because pitch has less room, and before normalising, a straight-up drag drifted
    visibly slower than a level one. Compare the on-screen angular rate both ways. */
-await page.evaluate(() => { setCfg('spinHome', 0); setCfg('spinAxis', 1); });
+await page.evaluate(() => setCfg('spinAfter', 1));
 async function driftRate() {
   return await page.evaluate(async () => {
     const y0 = gYaw, p0 = gPitch;
