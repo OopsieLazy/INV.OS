@@ -2313,3 +2313,61 @@ the take-off — it comes out of the geometry rather than being animated in.
 fails if the graph goes more than 8 consecutive frames without moving. That is the
 specific failure the old ramp had, and nothing else in the suite would have caught it —
 every position was continuous the whole time.
+
+## v24.5 — the orbits never changed size; the handoff just stopped stalling
+
+Reported: "why does it feel like the orbits change in the project 3d graph now. I just
+wanted the frames to be more seamless now the orbits are large?"
+
+**They did not change.** Measured captured orbit radius, same demo shop, same view:
+
+| build | mean captured `o.r` | worst drift from it, settled |
+|---|---|---|
+| v24.3 `805801a` | 510.5 | 0.0% |
+| v24.4 `0f1c9d3` | 511.0 | 0.0% |
+
+What changed is how fast you get to the wide part of the sweep. v24.3 ramped the orbital
+SPEED from zero, so it crawled; 300 frames in, the cluster had only spread to 268 from the
+origin. v24.4 does not stall, so by the same frame it has reached 317. Same circles,
+further around them. That is the whole of the "bigger" — and the previous complaint (the
+stall) and this one are the same fact seen from two sides.
+
+I nearly shipped a fix for the wrong cause. The first metric I wrote measured distance from
+the ORIGIN and showed 1.34x growth, which looks exactly like expanding orbits. It is not:
+nodes settle on one side of their parent and then spread around the full circle, so that
+number climbs in every build, including two that are provably identical. Only the
+parent-relative radius answers the question. The probe now says so where it prints it.
+
+### What actually shipped
+
+- The v24.4 line that ran `gPhysics` under the blend is **gone**. It was not causing the
+  radius growth (removing it changed the number not at all), but it did keep the force
+  layout running for 1.5s after the orbits were captured, which is a thing that should
+  not happen. The stall it was there to prevent is handled by flooring the blend at 0.035
+  instead: a node closes 3.5% of the gap to its orbit every frame from the first one, which
+  comes out near the drift the settling layout was already producing. Measured across the
+  handoff: `0.03 -> 0.09` and no spikes, versus the burst-then-stall it replaces.
+
+- **`orbit size` setting** (0.3-1.5x, default 1). There was no lever for this at all: the
+  orbit radius is simply wherever the force layout left the node, which is why the orbits
+  are as wide as the clusters. Below 1 the parts pull in toward their project. Default 1
+  reproduces the old geometry exactly (radius held to 0.0% drift, no spikes). Changing it
+  live re-captures the orbits; the blend then walks each node onto its new circle at about
+  6.5 units/frame rather than teleporting it.
+
+### Two real bugs found while proving the above
+
+- **`stepOrbits` was order-dependent.** It walked `gNodes` in array order, so a child whose
+  parent came later was placed against the parent's PREVIOUS position and trailed it by
+  however far the parent had moved. Invisible while orbits were captured at exactly the
+  radius the layout had produced (a parent moves ~1 unit/frame), fatal as soon as a parent
+  could relocate. Orbits are now stepped parents-first via `gOrbitOrder`, depth-sorted once
+  at capture.
+
+- **The first cut of `orbit size` made ellipses, not circles.** `u` is built as `d/r`, and
+  scaling `r` before that division left `|u| = 1/orbitSize` — so `r*(u*cos + v*sin)` kept
+  its original width along `u` and only shrank across it. At 0.6 a part with a captured
+  radius of 307 sat at 450 and never converged. `u` and `v` now normalise by the true
+  distance, with the scale applied only to `r`. Converged to 307.6 vs 307.6 captured.
+
+Verified: 109 UI checks, 37 settings-audit checks, `go test ./internal/...`.

@@ -53,8 +53,9 @@ async function run(cmd) {
 }
 
 await run('__fr_demo');
-await run('graph galaxy');
+await run(process.env.PROBE_VIEW || 'graph galaxy');
 if (MODE === 'orbit') await run('graph orbit');
+if (process.env.PROBE_CMD) { await run(process.env.PROBE_CMD); await page.waitForTimeout(300); }
 
 // Record from the moment of the switch, so the early frames are captured.
 const trace = await page.evaluate(async () => {
@@ -68,10 +69,24 @@ const trace = await page.evaluate(async () => {
   if (origInit) window.initOrbits = function () { events.push([frames.length, 'initOrbits']); return origInit.apply(this, arguments); };
 
   for (let f = 0; f < 300; f++) {
+    // Parent-relative radius is the only honest measure of "did the orbits grow":
+    // o.r is captured once and never written again, so an orbit can only look bigger
+    // if the node has drifted off it or its parent has moved.
+    const byId = {}; gNodes.forEach(n => byId[n.id] = n);
+    let rSum = 0, tSum = 0, rN = 0, worst = 0;
+    for (const n of gNodes) {
+      const o = n.orb; if (!o) continue;
+      const par = byId[o.parent]; if (!par) continue;
+      const d = Math.hypot(n.x - par.x, n.y - par.y, (n.z || 0) - (par.z || 0));
+      rSum += d; tSum += o.r; rN++;
+      const err = Math.abs(d - o.r) / (o.r || 1);
+      if (err > worst) worst = err;
+    }
     frames.push({
       pos: gNodes.map(n => [n.x, n.y, n.z || 0]),
       ids: gNodes.map(n => n.id).join('|'),
       alpha: gAlpha,
+      orbN: rN, orbActual: rN ? rSum / rN : 0, orbTarget: rN ? tSum / rN : 0, orbWorst: worst,
     });
     await new Promise(r => requestAnimationFrame(r));
   }
@@ -81,6 +96,18 @@ const trace = await page.evaluate(async () => {
 });
 
 const { frames, events } = trace;
+
+const direct = await page.evaluate(() => {
+  const byId = {}; gNodes.forEach(n => byId[n.id] = n);
+  return gNodes.filter(n => n.orb).slice(0, 4).map(n => {
+    const p = byId[n.orb.parent];
+    return { id: n.id, parent: n.orb.parent, haveParent: !!p, r: +n.orb.r.toFixed(1),
+      dist: p ? +Math.hypot(n.x-p.x, n.y-p.y, (n.z||0)-(p.z||0)).toFixed(1) : null,
+      ramp: +gOrbitRamp.toFixed(3) };
+  });
+});
+console.log('direct read after the trace:');
+for (const d of direct) console.log('  ', JSON.stringify(d));
 
 // distance between two frames, only when the node set is identical
 const dist = (a, b) => {
@@ -119,6 +146,43 @@ if (initFrame) {
   const justAfter = steps[initFrame] ?? 0;
   console.log(`  before ${before.toFixed(2)} -> just after ${justAfter.toFixed(2)}` +
     (justAfter > Math.max(0.5, before * 4) ? '   <-- velocity jump (a burst)' : '   (eased)'));
+}
+
+// 1c. does the LAYOUT change across the handoff? The orbits should take over the
+// positions the force layout produced, not keep expanding them.
+if (initFrame) {
+  const radius = (f) => {
+    const p = frames[f].pos;
+    let s = 0;
+    for (const q of p) s += Math.hypot(q[0], q[1], q[2]);
+    return s / p.length;
+  };
+  const before = radius(Math.max(0, initFrame - 2));
+  const mid = radius(Math.min(frames.length - 1, initFrame + 45));
+  const after = radius(frames.length - 1);
+  console.log(`
+mean radius: before ${before.toFixed(0)} · mid-handoff ${mid.toFixed(0)} · settled ${after.toFixed(0)}`);
+  // NOTE: this is distance from the ORIGIN, and it is NOT a measure of orbit size. A
+  // settled cluster sits on one side of its parent; once the orbits run, the nodes
+  // spread around the whole circle, so this number climbs by 1.3-1.7x in every build,
+  // including ones where the orbits are provably identical. Read the parent-relative
+  // radius below instead — that is the one that answers "did the orbits change".
+  const grew = after / (before || 1);
+  console.log(`  spread from origin across the handoff: ${grew.toFixed(2)}x   (phase, not size)`);
+
+  const orb = (f) => frames[f];
+  const show = (label, f) => {
+    const x = orb(f);
+    if (!x.orbN) { console.log(`  ${label}: no orbits yet`); return; }
+    console.log(`  ${label.padEnd(14)} nodes ${String(x.orbN).padStart(4)}` +
+      `  mean |node-parent| ${x.orbActual.toFixed(1).padStart(7)}` +
+      `  captured o.r ${x.orbTarget.toFixed(1).padStart(7)}` +
+      `  worst drift ${(x.orbWorst * 100).toFixed(1)}%`);
+  };
+  console.log('\norbit radius (the actual "are the orbits bigger" question):');
+  show('at capture', Math.min(frames.length - 1, initFrame + 1));
+  show('mid-handoff', Math.min(frames.length - 1, initFrame + 45));
+  show('settled', frames.length - 1);
 }
 
 // 2. rewinds — a frame closer to an OLDER frame than to its predecessor

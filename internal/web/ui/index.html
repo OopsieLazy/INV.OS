@@ -1340,6 +1340,11 @@ function applyCfg(changedKey){
   if (changedKey==="launchZoom" && graphMode!=="off"){ gUserAdjusted=false; gScale=gFitScale(); }
   // a different node budget means a different graph
   if (changedKey==="graphNodes"){ graphItemsLoaded=false; graphSync(); }
+  /* Orbit size is baked into each node's radius when the orbits are captured, so it can
+     only take effect by capturing them again. That is safe to do live: the re-capture
+     resets the blend, and the blend is what walks each node from where it is now onto
+     its new circle instead of teleporting it there. */
+  if (changedKey==="orbitSize" && gOrbitInit){ gOrbitInit=false; gOrbitRamp=0; }
   if (graphMode!=="off") gAlpha=Math.max(gAlpha,0.05);
 }
 
@@ -3424,6 +3429,7 @@ const SETTINGS = [
   {k:"orbit",      label:"orbit motion",   min:0,   max:1,   step:1,    def:0,    fmt:v=>v?"on":"off"},
   // The master speed from the orbit spec's tuning notes, which was buried in the code.
   {k:"orbitSpeed", label:"orbit speed",    min:0.2, max:3,   step:0.1,  def:1,    fmt:v=>v.toFixed(1)+"x"},
+  {k:"orbitSize",  label:"orbit size",     min:0.3, max:1.5, step:0.05, def:1,    fmt:v=>v.toFixed(2)+"x"},
   // How many parts the graph will draw. Worth exposing now that it scales: a slow
   // machine can dial it down, and a big shop can push it up and watch the frame cost.
   {k:"graphNodes", label:"graph nodes",    min:1000,max:50000,step:1000,def:20000,fmt:v=>v>=1000?(v/1000)+"k":String(v)},
@@ -3613,6 +3619,7 @@ let gOrbit = false, gOrbitInit = false;   // gOrbit mirrors cfg("orbit"); see th
    continuous but the VELOCITY is not, which reads as drifting and then bursting into
    motion. This ramps 0 -> 1 over about a second. */
 let gOrbitRamp = 0;
+let gOrbitOrder = null;   // gNodes sorted parents-first; see stepOrbits
 
 /* orbitParentMap derives the hierarchy from the edges that are already there:
    parts hang off their project, projects hang off the sun. Trail edges (w<0, the
@@ -3640,7 +3647,12 @@ function initOrbits(){
     const par = byId[parent[n.id]];
     if (!par || n.type==="sun"){ n.orb=null; return; }
     const dx=n.x-par.x, dy=n.y-par.y, dz=(n.z||0)-(par.z||0);
-    const r = Math.max(12, Math.hypot(dx,dy,dz));
+    /* The orbit radius is simply where the force layout left the node, which is why the
+       orbits are as wide as the clusters are. orbitSize scales that: below 1 the parts
+       pull in toward their project instead of sweeping the full width of the layout.
+       It only affects the circle, never the layout that produced it. */
+    const d0 = Math.max(12, Math.hypot(dx,dy,dz));
+    const r = d0 * cfg("orbitSize");
 
     /* The orbit is stored as a BASIS, not as angles. u points at where the node already
        is; v is perpendicular to it in the orbital plane; the position is
@@ -3650,7 +3662,11 @@ function initOrbits(){
        from a seed, which cannot reproduce the node's own position. Measured: every node
        jumped an average of 212 units on the first orbit frame, against a median frame
        movement of 0.6 — the "reset" a second after switching in. */
-    const ux=dx/r, uy=dy/r, uz=dz/r;
+    // Normalise by the TRUE distance, not by the scaled radius: u and v have to be unit
+    // vectors or `r*(u*cos + v*sin)` stops being a circle. Dividing by the scaled r left
+    // |u| = 1/orbitSize, which turned every orbit into an ellipse that kept its original
+    // width along u and only shrank across it.
+    const ux=dx/d0, uy=dy/d0, uz=dz/d0;
 
     // A per-node axis gives each orbit its own plane. In 2D it must be the screen plane
     // or the circle collapses to a line.
@@ -3668,6 +3684,19 @@ function initOrbits(){
     const speed = (0.15 + 0.5/Math.sqrt(r)) * (seed%2 ? 1 : -1) * 0.02;
     n.orb = { parent:par.id, r, ang:0, speed, ux, uy, uz, vx, vy, vz };
   });
+  /* Depth-sort so every parent is stepped before its children. Nodes whose parent chain
+     does not resolve keep their original relative order at the end. */
+  const depth = {}, byId2 = {};
+  gNodes.forEach(n=>byId2[n.id]=n);
+  const depthOf = (n, guard) => {
+    if (depth[n.id] !== undefined) return depth[n.id];
+    if (guard > 64) return (depth[n.id] = 0);          // cycle: treat as a root
+    const par = n.orb && byId2[n.orb.parent];
+    return (depth[n.id] = par ? depthOf(par, guard+1) + 1 : 0);
+  };
+  gNodes.forEach(n=>depthOf(n, 0));
+  gOrbitOrder = gNodes.slice().sort((a,b)=>depth[a.id]-depth[b.id]);
+
   gOrbitRamp = 0;          // ease in from a standstill
   gOrbitInit = true;
 }
@@ -3702,11 +3731,24 @@ function recaptureOrbit(n){
    angle that is not advancing leaves every node exactly where it was captured. Blending
    the POSITION instead lets the layout carry on settling underneath while the orbits
    fade in over the top, so the cluster stays alive and then takes off. */
+/* Orbits are a HIERARCHY — a part orbits its project, the project orbits the sun — so a
+   node's position is only meaningful once its parent is already in this frame's place.
+   Stepping gNodes in array order gets that wrong whenever a child happens to sit before
+   its parent: the child is placed against the parent's previous position and trails it
+   forever by however far the parent moved.
+
+   That stayed invisible while orbits were captured at exactly the radius the layout had
+   left the node at, because then a parent only ever moved a unit or so per frame. It
+   surfaced the moment `orbit size` could move a parent a long way: measured, a part with
+   a captured radius of 307 sat 450 from its project and never converged.
+
+   gOrbitOrder is that parents-first order, built once when the orbits are captured. */
 function stepOrbits(dt, blend){
   if (blend === undefined) blend = 1;
   const byId = {};
   gNodes.forEach(n=>byId[n.id]=n);
-  gNodes.forEach(n=>{
+  const order = gOrbitOrder && gOrbitOrder.length ? gOrbitOrder : gNodes;
+  order.forEach(n=>{
     if (n.type==="sun"){ n.x=0; n.y=0; n.z=0; return; }
     const o = n.orb; if (!o) return;
     const par = byId[o.parent]; if (!par) return;
@@ -4028,10 +4070,19 @@ function gTick(){
       if (!held){
         gOrbitRamp = Math.min(1, gOrbitRamp + 1/90);        // ~1.5s at 60fps
         const t = gOrbitRamp*gOrbitRamp*(3-2*gOrbitRamp);   // smoothstep, gentle at both ends
-        // The layout keeps settling underneath while the orbits fade in over it, so the
-        // cluster never stops moving — it drifts, then gathers, then takes off.
-        if (t < 1) gPhysics(0.03 * (1-t));
-        stepOrbits(cfg("orbitSpeed"), t);
+        // The floor is what keeps the first frames alive. A pure smoothstep starts at
+        // essentially zero, so for the first ten frames the nodes barely follow the
+        // orbit at all and the whole scene reads as a stall. At 0.035 a node closes 3.5%
+        // of the gap to its orbit each frame, which at the radii we draw comes out to
+        // about the same drift the settling layout was already producing — so the
+        // handoff has no visible seam at either end.
+        //
+        // Nothing runs the force simulation here on purpose. Doing that (v24.4) kept the
+        // motion going, but it also kept the LAYOUT going: project cores repel each other
+        // 60x harder than parts do, so another second and a half of physics after the
+        // orbits were captured pushed the clusters 1.34x further apart. The orbits looked
+        // like they had grown, because they had.
+        stepOrbits(cfg("orbitSpeed"), Math.max(0.035, t));
       }
       gAlpha = 0.001;
       if (g3d && gAutoRot && !held) gYaw += cfg("driftSpeed");
