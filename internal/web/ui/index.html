@@ -588,6 +588,34 @@ async function loadAll(what){
   }
 }
 
+/* Settings are per-DEVICE: a tablet at the bench wants a different theme, a different
+   graph budget and a different zoom from the office PC, and forcing one set on all of
+   them would be worse than useless.
+
+   But a shop setting up its fifth tablet should not have to dial all of it in again. So
+   the shop can store a DEFAULT set on the server, which a device with no settings of
+   its own picks up on first run. After that the device is on its own — a default is a
+   starting point, not a policy. */
+const DEVICE_PREF_KEYS = ["theme", "cfg", "hud", "cores"];
+
+function currentPrefs(){
+  return { theme: state.theme, cfg: state.cfg, hud: state.hud, cores: state.cores };
+}
+
+async function saveShopDefaults(){
+  try {
+    await DB.setMeta("default_prefs", JSON.stringify(currentPrefs()));
+    return true;
+  } catch(e){ print("could not save the shop default: "+e.message,"a"); return false; }
+}
+
+async function shopDefaults(){
+  try {
+    const v = (await DB.meta("default_prefs")).value;
+    return v ? JSON.parse(v) : null;
+  } catch(e){ return null; }
+}
+
 /* Cached server info, so the titlebar can show shop-access state without asking on
    every repaint. Refreshed on boot and whenever the switch is thrown. */
 let serverInfo = null;
@@ -616,9 +644,20 @@ async function refreshServerInfo(){
 }
 
 /* Check periodically and whenever the window is focused again, which is exactly when
-   someone has come back after an update. */
+   someone has come back after an update.
+
+   The poll skips hidden windows. A shop with six tablets left open on a bench was
+   otherwise making a request every thirty seconds each, around the clock, to ask a
+   question nobody was there to read the answer to. Coming back to the window checks
+   immediately, so nothing is missed by waiting. */
 addEventListener("focus", ()=>{ if(!updateReady) refreshServerInfo(); });
-setInterval(()=>{ if(!updateReady) refreshServerInfo(); }, 30000);
+addEventListener("visibilitychange", ()=>{
+  if (!document.hidden && !updateReady) refreshServerInfo();
+});
+setInterval(()=>{
+  if (document.hidden || updateReady) return;
+  refreshServerInfo();
+}, 30000);
 
 /* cached summary so the title bar and home screen do not re-query constantly */
 let summary = {items:0, pieces:0, bins:0, low:0, projects:0, log:0, dbBytes:0};
@@ -791,9 +830,11 @@ async function load(){
   state = { classes:[...DEFAULT_CLASSES], sections:{...DEFAULT_SECTIONS},
             projects:[], nextPid:1, items:[], log:[], undo:[],
             counted:{}, countlog:[], cfg:{} };
+  let hadOwnPrefs = false;
   try {
-    const prefs = JSON.parse(localStorage.getItem(KEY+"-prefs") || "{}");
-    Object.assign(state, prefs);
+    const raw = localStorage.getItem(KEY+"-prefs");
+    hadOwnPrefs = !!raw;
+    Object.assign(state, JSON.parse(raw || "{}"));
   } catch(e){ /* fall through to defaults */ }
 
   try {
@@ -811,6 +852,12 @@ async function load(){
     state.firstRun = (await DB.meta("setup_done")).value !== "1";
     state.seeded = summary.items > 0;
     state.seededDemo = (await DB.meta("demo")).value === "1";
+    // A device with no settings of its own starts from the shop's default set, if the
+    // shop has saved one. Devices that have been configured are never overwritten.
+    if (!hadOwnPrefs){
+      const d = await shopDefaults();
+      if (d) for (const k of DEVICE_PREF_KEYS) if (d[k] !== undefined) state[k] = d[k];
+    }
   } catch(e){
     print("cannot reach the server: "+e.message,"a");
     print("this page is served by the invos program — is it still running?","d");
@@ -1314,6 +1361,35 @@ function renderSettings(focusKey){
   print("");
   { const d=document.createElement("div"); d.className="line idx d"; d.dataset.menu="run:cfgreset";
     d.textContent="  reset all to defaults"; out.appendChild(d); }
+  { const d=document.createElement("div"); d.className="line idx d"; d.dataset.menu="run:__shopdefault";
+    d.textContent="  save these as the shop default   (new devices start here)";
+    out.appendChild(d); }
+
+  /* The display toggles used to be reachable only by typing `theme cores`, `bar` or
+     by finding the HUD button on the graph. They are display settings; this is the
+     display settings screen. They are stored in `state` rather than `state.cfg`, so
+     they get their own rows instead of being forced into the slider list. */
+  {
+    const row = (label, on, cmd, hint) => {
+      const d = document.createElement("div");
+      d.className = "line idx g"; d.dataset.menu = "run:" + cmd;
+      const n = document.createElement("span");
+      n.className = "c"; n.textContent = "  " + label.padEnd(16);
+      const v = document.createElement("span");
+      v.className = on ? "" : "d"; v.textContent = " " + (on ? "on" : "off").padStart(5) + " ";
+      const h = document.createElement("span"); h.className = "d"; h.textContent = "  " + hint;
+      d.appendChild(n); d.appendChild(v); d.appendChild(h);
+      out.appendChild(d);
+    };
+    row("node cores", gCores, "__toggle cores", "bright centre on every node");
+    row("HUD frame", hudOn, "__toggle hud", "the frame and readouts over the graph");
+    row("title bar", !state.barOff, "__toggle bar", "the strip along the top");
+  }
+  { const d=document.createElement("div"); d.className="line idx g"; d.dataset.menu="run:theme";
+    const n=document.createElement("span"); n.className="c"; n.textContent="  "+"theme".padEnd(16);
+    const v=document.createElement("span"); v.textContent=" "+(state.theme||"campbell").padStart(5)+" ";
+    const h=document.createElement("span"); h.className="d"; h.textContent="  pick a colour scheme";
+    d.appendChild(n); d.appendChild(v); d.appendChild(h); out.appendChild(d); }
 
   /* STATION — this machine, not the look of the app. Shop access belongs here
      because it is the setting people actually go looking for: "how do I get this
@@ -1611,7 +1687,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -2273,6 +2349,31 @@ async function exec(line){
       print("");
       print("  db export     download a consistent copy right now","d");
       print("  backup        download everything as JSON instead","d");
+      return;
+    }
+
+    case "__shopdefault": {
+      if (await saveShopDefaults()){
+        print("saved as the shop default.","g");
+        print("  a device opening this shop for the first time starts with these.","d");
+        print("  devices already set up keep their own — a default is a starting point.","d");
+      }
+      renderSettings();
+      return;
+    }
+
+    case "__toggle": {
+      // The settings rows use this rather than the plain commands, because those end by
+      // showing their OWN screen (theme cores opens the theme list) — which would throw
+      // you out of settings every time you flipped something.
+      const what=rest.trim().toLowerCase();
+      if (what==="cores"){ gCores=!gCores; state.cores=gCores; }
+      else if (what==="hud"){ hudOn=!hudOn; state.hud=hudOn; updateHud(); }
+      else if (what==="bar"){
+        state.barOff=!state.barOff;
+        document.body.classList.toggle("bar-off", !!state.barOff);
+      }
+      await save(); gWake(); renderSettings();
       return;
     }
 
@@ -2965,7 +3066,7 @@ async function exec(line){
       if (["3d","3","cube"].includes(ml)){ g3d=true; if(graphMode==="off")setGraph("split"); graphHome(); print("graph 3D — drag to orbit, it drifts on its own. graph home recenters · graph 2d flattens.","d"); return; }
       if (["2d","flat"].includes(ml)){ g3d=false; if(graphMode==="off")setGraph("split"); graphHome(); print("graph 2D.","d"); return; }
       if (ml==="style"){ gStyle = gStyle==="holo"?"clean":"holo"; print(`graph style: ${gStyle==="holo"?"holographic glow":"clean minimal"}`,"d"); return; }
-      if (ml==="hud"){ hudOn=!hudOn; state.hud=hudOn; updateHud(); await save(); print(`HUD frame ${hudOn?"on":"off"}`,"d"); return; }
+      if (ml==="hud"){ hudOn=!hudOn; state.hud=hudOn; updateHud(); gWake(); await save(); print(`HUD frame ${hudOn?"on":"off"}`,"d"); return; }
       if (ml==="sweep"){ sweepT=performance.now(); print("sweep","d"); return; }
       if (["png","image","snapshot","shot"].includes(ml)){
         if (graphMode==="off"){ print("open the graph first (graph / graph galaxy), then: graph png","a"); return; }

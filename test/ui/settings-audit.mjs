@@ -204,6 +204,60 @@ await run('graph inv');
 await page.waitForTimeout(6000);
 check('with the setting off it keeps drawing', await get(() => gRAF !== null));
 
+// ── display toggles reachable from the settings screen ────────────────────
+console.log('\ndisplay toggles in settings');
+await run('settings');
+const screen = await page.textContent('#out');
+for (const label of ['node cores', 'HUD frame', 'title bar', 'theme']) {
+  check(`settings offers "${label}"`, screen.includes(label), screen.slice(0, 260));
+}
+
+// clicking one must flip it AND stay on the settings screen
+const coresBefore = await get(() => gCores);
+const coresRow = await page.$('[data-menu="run:__toggle cores"]');
+check('the node-cores row is clickable', coresRow !== null);
+if (coresRow) {
+  await coresRow.click();
+  await page.waitForTimeout(400);
+  check('clicking it flips the toggle', (await get(() => gCores)) !== coresBefore);
+  check('and stays on the settings screen',
+    /SETTINGS/.test(await page.textContent('#out')),
+    (await page.textContent('#out')).slice(0, 120));
+  await (await page.$('[data-menu="run:__toggle cores"]')).click();   // put it back
+}
+
+// ── shop defaults ─────────────────────────────────────────────────────────
+console.log('\nshop defaults');
+await run('theme phosphor');
+await run('cfgadj glow up');
+const mine = await get(() => ({ theme: state.theme, glow: cfg('glow') }));
+await run('__shopdefault');
+const stored = await page.evaluate(async () => JSON.parse((await DB.meta('default_prefs')).value || '{}'));
+check('saving writes the shop default to the server',
+  stored.theme === mine.theme && stored.cfg && Math.abs(stored.cfg.glow - mine.glow) < 1e-6,
+  JSON.stringify(stored));
+
+// a device with no settings of its own starts from the shop default
+// A separate CONTEXT, not just a new page: pages in one context share localStorage,
+// so a new page would inherit this device's settings and prove nothing.
+const freshCtx = await browser.newContext();
+const fresh = await freshCtx.newPage();
+await fresh.goto(BASE, { waitUntil: 'networkidle' });
+await fresh.waitForTimeout(1200);
+const inherited = await fresh.evaluate(() => ({ theme: state.theme, glow: cfg('glow') }));
+check('a new device inherits the shop default',
+  inherited.theme === mine.theme && Math.abs(inherited.glow - mine.glow) < 1e-6,
+  `${JSON.stringify(mine)} -> ${JSON.stringify(inherited)}`);
+
+// a device that already has settings keeps them
+await fresh.evaluate(() => { state.theme = 'amber'; save(); });
+await fresh.reload({ waitUntil: 'networkidle' });
+await fresh.waitForTimeout(1000);
+const kept = await fresh.evaluate(() => state.theme);
+check('a configured device keeps its own settings', kept === 'amber', `theme is ${kept}`);
+await fresh.close();
+await freshCtx.close();
+
 check('no page errors during the audit', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

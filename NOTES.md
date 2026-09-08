@@ -2169,3 +2169,50 @@ is missing. A build is one decision by one person and reverses as one.
 108 UI checks (up from 92): import end to end, build consuming and returning stock,
 department and shelf renames reaching the database, CSV export reading the whole
 inventory rather than the screen, and the sections manager.
+
+---
+
+# v24.2 — the three follow-ups from the settings audit
+
+## Display toggles are in Settings
+Node cores, the HUD frame, the title bar and the theme were reachable only by typing
+`theme cores`, finding a button on the graph, or knowing `bar` exists. They are display
+settings; this is the display settings screen.
+
+They live in `state`, not `state.cfg`, so they get their own rows rather than being
+forced into the slider list — the two are stored differently and pretending otherwise
+would mean special cases inside `cfg()`.
+
+The rows run `__toggle` rather than the plain commands, because those end by showing
+their OWN screen (`theme cores` opens the theme list), which would throw you out of
+settings every time you flipped something.
+
+## Background work
+Audited every timer and loop outside the graph. One real finding: the build-check poll
+ran every 30 seconds regardless of whether anyone was looking. Six tablets left open on
+a bench meant a request every five seconds, around the clock, asking a question nobody
+was there to read. It now skips hidden windows and checks immediately on becoming
+visible, so nothing is missed by waiting.
+
+The popped-out-window poll (700ms) is correctly cleared when the graph docks, and the
+scan loop only runs while scanning. Nothing else polls.
+
+## Shop defaults
+Settings are per-DEVICE and should stay that way: a bench tablet wants a different
+theme, graph budget and zoom from the office PC, and forcing one set on all of them
+would be worse than useless.
+
+But setting up a fifth tablet should not mean dialling it all in again. The shop can now
+save its current look as a default (`settings` → "save these as the shop default"),
+stored on the server. A device with NO settings of its own picks it up on first run.
+A device that has been configured is never overwritten — a default is a starting point,
+not a policy.
+
+## Verified
+36 checks in the settings audit (up from 26): every display toggle is present and
+clickable, flipping one stays on the screen, the default is written to the server, a
+genuinely fresh browser context inherits it, and a configured device keeps its own.
+
+The new-device check uses a separate browser CONTEXT rather than a new page — pages in
+one context share localStorage, so a new page would have inherited the settings and
+proved nothing.
