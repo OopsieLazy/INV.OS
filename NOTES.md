@@ -2111,3 +2111,61 @@ what they claimed: waking cannot be caught by sampling `gRAF`, because waking sc
 ONE frame that immediately re-parks — it has to be measured by counting draws.
 
 92 UI checks, orbit metrics unchanged (p95 1px, zero flips, eased handoff).
+
+---
+
+# v24.1 — roadmap audit: P1-P8 verified, and three things were not actually done
+
+Checked each item claimed DONE rather than trusting the checkbox. Three gaps.
+
+## 1. Spreadsheet import was never tested end to end
+P6 was marked done because the gate was removed and the commit was wired to the bulk
+endpoint. Nothing drove it. Writing the test found two problems immediately:
+- a dead `snapshotUndo()` still sat in the commit path, taking a copy of the in-memory
+  item array — which is now only the rows on screen. Removed; the server writes the
+  import and its undo entry in one transaction.
+- the test itself used the wrong confirm word, which is how it turned out nobody had
+  ever run the flow to the end.
+
+Now verified: rows parse, the header is detected, fields land in the right columns, a
+row with no bin is filed by guessing its department, and the whole sheet backs out in
+ONE undo.
+
+## 2. Renaming a department or shelf never reached the database
+The bigger find. `class 3 = METALWORKING`, `class 44 = PLYWOOD`, the section manager's
+inline rename, and adding a shelf ALL wrote to the in-memory copy and called `save()` —
+which since v21.1 only persists per-device preferences. So a rename looked correct on
+screen, was invisible to every other station, and was gone on reload.
+
+The section manager READ from the database (its counts were live), which is exactly why
+this survived the port audit: the screen looked right.
+
+All four paths now go through `renameDept()` / `renameSection()`, which write to the
+server. Clearing a shelf that still holds items is refused by the server, so that guard
+is real rather than advisory.
+
+## 3. `build` could not be undone
+A build looped `AdjustQty` per part and then set the status, so it produced several log
+entries. `undo` reverses ONE — the status — and left the parts off the shelf. Tested by
+building, undoing, and checking the stock came back: it did not.
+
+There is now a `BuildProject` store method and a `POST /api/projects/{pid}/build`
+endpoint that consumes the whole BOM and sets the status in one transaction with one log
+entry. Shortages come back as 409 with the short lines, so the terminal still lists what
+is missing. A build is one decision by one person and reverses as one.
+
+## Also
+- The harness could not see commands failing. Every command runs inside an async
+  handler, so a throw becomes an UNHANDLED REJECTION, which `pageerror` does not catch.
+  The suite now listens for both. (The export "failure" that prompted this turned out to
+  be a bad assertion — `textContent` joins the terminal's divs without newlines, so
+  counting lines could never work.)
+- Deleted `component-inventory-no-galaxy.html` and `orbit-mock.html`. Both are fully
+  represented in the build now — the fork as the `galaxy` setting, the mock as orbit
+  mode — and both remain in git history and on the `html-demo` branch. Keeping stale
+  copies around is how the original fork ended up needing to be re-derived by hand.
+
+## Verified
+108 UI checks (up from 92): import end to end, build consuming and returning stock,
+department and shelf renames reaching the database, CSV export reading the whole
+inventory rather than the screen, and the sections manager.

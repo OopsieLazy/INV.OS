@@ -400,7 +400,13 @@ const DB = {
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch(e){ throw new Error("bad response from server"); }
-    if (!r.ok) throw new Error((data && data.error) || ("server error " + r.status));
+    if (!r.ok){
+      const err = new Error((data && data.error) || ("server error " + r.status));
+      // carry structured detail through, so a caller can render a shortage list rather
+      // than just the sentence "not enough stock"
+      if (data && data.short) err.short = data.short;
+      throw err;
+    }
     return data;
   },
   get(p){ return this.req("GET", p); },
@@ -454,6 +460,7 @@ const DB = {
   setBom(pid, cid, need){ return this.put(`/api/projects/${pid}/bom/${cid}`, {need}); },
   delBom(pid, cid){ return this.del(`/api/projects/${pid}/bom/${cid}`); },
   sharedParts(){ return this.get("/api/shared-parts"); },
+  build(pid, partial){ return this.post(`/api/projects/${pid}/build`, {partial:!!partial}); },
 
   /* maintenance ---------------------------------------------------------- */
   // allItems pages through the ENTIRE inventory. This deliberately breaks the
@@ -486,6 +493,31 @@ const DB = {
 
   viewComplete: true,   // does state.items currently hold every matching row?
 };
+
+/* Renaming a department or a shelf is SHOP data, not a display preference: every
+   station has to see it, and it has to survive a reload. These paths used to write to
+   the in-memory copy and call save(), which now only persists per-device preferences —
+   so a rename looked right on screen and was gone on the next load. */
+async function renameDept(n, label){
+  try { await DB.setDept(n, label); }
+  catch(e){ print("could not rename it: "+e.message,"a"); return false; }
+  state.classes[n] = label;
+  deptCache = null;
+  refreshHome(false);
+  graphSync();
+  return true;
+}
+
+/* An empty label CLEARS the shelf. The server refuses that while the shelf still holds
+   items and says so, which is the check that matters — the client-side one is only there
+   to give a faster, friendlier message. */
+async function renameSection(code, label){
+  try { await DB.setSection(code, label); }
+  catch(e){ print(e.message,"a"); return false; }
+  if (label) state.sections[code] = label; else delete state.sections[code];
+  graphSync();
+  return true;
+}
 
 /* finishFirstRun records that the shop has been set up. It lives in the database
    rather than this browser, so the welcome screen does not reappear on the next
@@ -962,14 +994,12 @@ async function renderSectionMgr(dept){
 async function secEditInput(line){
   const c=mode.code, t=line.trim();
   if (t.toLowerCase()==="cancel"){ endMode(); await renderSectionMgr(); return; }
-  if (c.length===1){ if(t){ const before=clsLabel(+c); state.classes[+c]=t.toUpperCase();
-      logAct(`renamed dept ${c}000: ${before} -> ${state.classes[+c]}`,{type:"class",n:+c,before}); await save(); } }
-  else { const before=state.sections[c]||null;
-    if(t){ state.sections[c]=t.toUpperCase(); logAct(`named section ${c}0`,{type:"section",key:c,before}); }
-    else if(before!==null){ const inUse=(await DB.peek({dept:+c[0], sec:+c[1], limit:1})).total > 0;
-      if(inUse){ print("  section has items — can't clear; move them first.","a"); }
-      else { delete state.sections[c]; logAct(`cleared section ${c}0`,{type:"section",key:c,before}); } }
-    await save();
+  if (c.length===1){
+    if (t) await renameDept(+c, t.toUpperCase());
+  } else {
+    const before=state.sections[c]||null;
+    if (t) await renameSection(c, t.toUpperCase());
+    else if (before!==null) await renameSection(c, "");   // blank clears; server guards it
   }
   endMode(); await renderSectionMgr();
 }
@@ -981,9 +1011,7 @@ async function secAddInput(line){
     mode.digit=t; mode.step=1; setPS1(`  section ${mode.dept}${t}0 name: `); return;
   }
   const key=mode.dept+mode.digit;
-  if (line.trim()){ const before=state.sections[key]||null;
-    state.sections[key]=line.trim().toUpperCase();
-    logAct(`added section ${key}0`,{type:"section",key,before}); await save(); }
+  if (line.trim()) await renameSection(key, line.trim().toUpperCase());
   endMode(); await renderSectionMgr();
 }
 
@@ -1913,7 +1941,9 @@ async function importMapInput(line){
   if (tl==="apply"){
     const {items,skipped}=w.preview;
     if (!items.length){ print("nothing to import.","a"); return; }
-    snapshotUndo(`import ${items.length} items from ${w.src}`);
+    // No snapshotUndo here: that took a copy of the in-memory item array, which is now
+    // only the rows on screen. The server writes the import and its undo entry in one
+    // transaction, so the whole sheet backs out as a single step from the log.
     const draftRows=[];
     // Rows without a bin are filed by guessing the department from the name, then
     // taking the next free bin in it. Bins are handed out here rather than per row on
@@ -2495,23 +2525,16 @@ async function exec(line){
         if (inUse){ print(`section ${key}0 has items — move or remove them first (open ${key}).`,"a"); return; }
         const before=state.sections[key]||null;
         if (before===null){ print(`section ${key}0 has no custom name.`,"d"); return; }
-        delete state.sections[key];
-        logAct(`cleared section name ${key}0 (was ${before})`, {type:"section", key, before});
-        await save(); print(`section ${key}0 name cleared.`,"g"); return;
+        if (await renameSection(key, "")) print(`section ${key}0 name cleared.`,"g");
+        return;
       }
       const m=rest.match(/^(\d{1,2})\s*=?\s*(.+)$/);
       if (!m){ print("name a shelf:  class 3 = METALWORKING   ·   class 51 = PLA   ·   class 51 clear","d"); return; }
       const label=m[2].trim().toUpperCase();
       if (m[1].length===1){
-        const before=clsLabel(+m[1]);
-        state.classes[+m[1]]=label;
-        logAct(`renamed dept ${m[1]}000: ${before} -> ${label}`, {type:"class", n:+m[1], before});
-        await save(); print(`${m[1]}000 is now ${label}`,"g");
+        if (await renameDept(+m[1], label)) print(`${m[1]}000 is now ${label}`,"g");
       } else {
-        const before=state.sections[m[1]]||null;
-        state.sections[m[1]]=label;
-        logAct(`named section ${m[1]}00: ${before||"—"} -> ${label}`, {type:"section", key:m[1], before});
-        await save(); print(`${m[1]}00 is now ${label}`,"g");
+        if (await renameSection(m[1], label)) print(`${m[1]}00 is now ${label}`,"g");
       }
       return;
     }
@@ -2778,26 +2801,25 @@ async function exec(line){
       const pname=partial?t2.slice(0,-1).join(" "):rest;
       const pr=resolveProj(pname); if (pr.err){ print(pr.err,"a"); return; }
       if (!pr.p.bom.length){ print("project has no parts yet.","a"); return; }
-      const st=projStats(pr.p);
-      if (st.shorts.length && !partial){
-        print(`can't build ${pr.p.name} — ${st.shorts.length} shortage${st.shorts.length===1?"":"s"}:`,"a");
-        st.shorts.forEach(x=>print(`  need ${x.short} more ${x.c?x.c.name:"(deleted part)"}`,"a"));
-        print(`proj shop ${pr.p.name} for the buy list · or: build ${pr.p.name} partial`,"d");
+      // The whole build is ONE server transaction: every part comes off the shelf and
+      // the status changes together, under a single log entry. Doing it as a loop of
+      // per-part adjustments meant `undo` reversed only the last thing that happened —
+      // the status — and left the parts off the shelf.
+      let res;
+      try { res = await DB.build(pr.p.pid, partial); }
+      catch(e){
+        if (e.short){
+          print(`can't build ${pr.p.name} — ${e.short.length} shortage${e.short.length===1?"":"s"}:`,"a");
+          e.short.forEach(l=>print(`  need ${l.need-l.have} more ${l.name}`,"a"));
+          print(`proj shop ${pr.p.name} for the buy list · or: build ${pr.p.name} partial`,"d");
+        } else print("could not build: "+e.message,"a");
         return;
       }
-      // Each line is its own atomic decrement on the server. A build is therefore
-      // several log entries rather than one — which is the honest record of what
-      // happened, and each step is individually reversible.
-      let taken=0;
-      for (const l of pr.p.bom){
-        const t3=Math.min(l.need, l.have);
-        if (t3<=0) continue;
-        try { await DB.adjust(l.cid, -t3); taken+=t3; }
-        catch(e){ print(`could not take ${l.name}: ${e.message}`,"a"); }
-      }
-      try { await DB.editProject(pr.p.pid, {status:"building"}); }catch(e){}
+      const taken=res.taken;
       await loadProjects(); await refreshSummary(); deptCache=null; updateBadge(); graphSync();
       print(`built ${pr.p.name} — took ${taken} pcs across ${pr.p.bom.length} BOM line${pr.p.bom.length===1?"":"s"}. (one undo returns everything)`,"g");
+      if (res.short && res.short.length)
+        print(`  ${res.short.length} line${res.short.length===1?"":"s"} came up short — 'proj shop ${pr.p.name}'`,"a");
       print(`  paper pick list: proj print ${pr.p.name}`,"d");
       const lows=summary.low;
       if (lows) print(`  ${lows} part${lows===1?"":"s"} now low — 'low'`,"a");

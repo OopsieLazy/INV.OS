@@ -211,6 +211,9 @@ type Store interface {
 	Log(ctx context.Context, limit, offset int) (Page[LogEntry], error)
 	Undo(ctx context.Context) (LogEntry, error)
 
+	// build
+	BuildProject(ctx context.Context, pid int64, partial bool) (int, []BomLine, error)
+
 	// cycle count
 	RecordCount(ctx context.Context, cid int64, actual int, scope string) (Item, error)
 	CountLog(ctx context.Context, limit int) ([]CountEntry, error)

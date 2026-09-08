@@ -1152,6 +1152,12 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 			From   int64 `json:"from"`
 			To     int64 `json:"to"`
 
+			BuildTook []struct {
+				CID int64 `json:"cid"`
+				Qty int   `json:"qty"`
+			} `json:"buildTook"`
+			BuildStatus string `json:"buildStatus"`
+
 			CountBefore     int              `json:"countBefore"`
 			BulkBefore      []Item           `json:"bulkBefore"`
 			MergeKeepBefore *Item            `json:"mergeKeepBefore"`
@@ -1188,6 +1194,20 @@ func (s *SQLite) Undo(ctx context.Context) (LogEntry, error) {
 				if hay, err = s.haystack(ctx, tx, it); err == nil {
 					_, err = tx.ExecContext(ctx, `UPDATE items SET norm=? WHERE cid=?`, hay, it.CID)
 				}
+			}
+		case "build":
+			// put every part back and restore the status the project had before
+			for _, b := range p.BuildTook {
+				if err != nil {
+					break
+				}
+				_, err = tx.ExecContext(ctx,
+					`UPDATE items SET qty = qty + ?, updated_at = ? WHERE cid = ?`,
+					b.Qty, time.Now().UnixMilli(), b.CID)
+			}
+			if err == nil && p.BuildStatus != "" {
+				_, err = tx.ExecContext(ctx,
+					`UPDATE projects SET status=? WHERE pid=?`, p.BuildStatus, p.PID)
 			}
 		case "count":
 			// put the quantity back to what the system believed before the count

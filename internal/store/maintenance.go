@@ -357,3 +357,110 @@ func (s *SQLite) Backup(ctx context.Context, destPath string) error {
 
 // Path reports where the live database file lives.
 func (s *SQLite) Path() string { return s.path }
+
+// ── build ───────────────────────────────────────────────────────────────────
+
+// BuildProject consumes a project's BOM from stock in ONE transaction with ONE log
+// entry, and marks the project as building.
+//
+// It exists because doing it as a loop of AdjustQty calls produced a separate log entry
+// per part plus another for the status — so `undo` after a build reversed only the
+// status change and left the parts off the shelf. A build is one decision by one person
+// and has to reverse as one.
+//
+// partial=false refuses unless every line can be filled; partial=true takes what is
+// there. Either way it reports what it actually took.
+func (s *SQLite) BuildProject(ctx context.Context, pid int64, partial bool) (taken int, short []BomLine, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		var name string
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM projects WHERE pid=?`, pid).
+			Scan(&name); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+
+		rows, err := tx.QueryContext(ctx, `
+			SELECT b.cid, i.name, i.bin, b.qty, i.qty, i.min
+			  FROM bom b JOIN items i ON i.cid = b.cid
+			 WHERE b.pid = ? ORDER BY i.bin`, pid)
+		if err != nil {
+			return err
+		}
+		var lines []BomLine
+		for rows.Next() {
+			var l BomLine
+			if err := rows.Scan(&l.CID, &l.Name, &l.Bin, &l.Need, &l.Have, &l.Min); err != nil {
+				rows.Close()
+				return err
+			}
+			lines = append(lines, l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(lines) == 0 {
+			return fmt.Errorf("%s has no parts yet", name)
+		}
+
+		short = nil
+		for _, l := range lines {
+			if l.Have < l.Need {
+				short = append(short, l)
+			}
+		}
+		if len(short) > 0 && !partial {
+			return errShort
+		}
+
+		now := time.Now().UnixMilli()
+		type tookLine struct {
+			CID int64 `json:"cid"`
+			Qty int   `json:"qty"`
+		}
+		var took []tookLine
+		taken = 0
+		for _, l := range lines {
+			n := l.Need
+			if n > l.Have {
+				n = l.Have
+			}
+			if n <= 0 {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE items SET qty = qty - ?, updated_at = ? WHERE cid = ?`, n, now, l.CID); err != nil {
+				return err
+			}
+			took = append(took, tookLine{CID: l.CID, Qty: n})
+			taken += n
+		}
+
+		var statusBefore string
+		tx.QueryRowContext(ctx, `SELECT status FROM projects WHERE pid=?`, pid).Scan(&statusBefore)
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET status='building' WHERE pid=?`, pid); err != nil {
+			return err
+		}
+
+		undo, _ := json.Marshal(map[string]any{
+			"buildTook": took, "pid": pid, "buildStatus": statusBefore,
+		})
+		word := "built"
+		if len(short) > 0 {
+			word = "part-built"
+		}
+		return appendLog(ctx, tx, "build",
+			fmt.Sprintf("%s %s — took %d piece%s across %d line%s",
+				word, name, taken, plural(taken), len(took), plural(len(took))),
+			nil, string(undo))
+	})
+	return taken, short, err
+}
+
+// errShort signals that a build was refused for lack of stock. The caller turns it into
+// the shortage list the user sees.
+var errShort = errors.New("not enough stock")
+
+// ErrShort reports whether a build failed because parts were missing.
+func ErrShort(err error) bool { return errors.Is(err, errShort) }

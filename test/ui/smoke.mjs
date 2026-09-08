@@ -69,7 +69,16 @@ async function main() {
   const browser = await chromium.launch({ executablePath: chromePath(), headless: !HEADED });
   const page = await browser.newPage();
   const consoleErrors = [];
-  page.on('pageerror', e => consoleErrors.push(e.message));
+  page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
+  // Commands run inside async handlers, so a throw there becomes an UNHANDLED REJECTION,
+  // not a page error — invisible to pageerror alone. Every command in this app is async,
+  // so without this the harness cannot see a command blowing up at all.
+  await page.addInitScript(() => {
+    window.__rejections = [];
+    addEventListener('unhandledrejection', e => {
+      window.__rejections.push(String(e.reason && e.reason.stack || e.reason));
+    });
+  });
 
   try {
     await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -220,7 +229,10 @@ async function runChecks(page, t, consoleErrors) {
   await t.key('Escape');
   check('escape returns home', /components|Sections/i.test(await t.screen()));
 
+  const rejections = await page.evaluate(() => window.__rejections || []);
   check('no uncaught page errors', consoleErrors.length === 0, consoleErrors.join('; '));
+  check('no unhandled promise rejections', rejections.length === 0,
+    rejections.slice(0, 2).join(' | '));
 
   // ── does what the UI did actually reach the database? ────────────────────
   console.log('\npersistence (server-side truth)');
@@ -689,6 +701,129 @@ async function runChecks(page, t, consoleErrors) {
   const newErrors = consoleErrors.slice(errorsBefore);
   check('every command runs without a page error', newErrors.length === 0,
     newErrors.slice(0, 3).join(' | '));
+
+  // ── build consumes real stock ─────────────────────────────────────────────
+  // Only the command sweep covered this, and "it did not throw" says nothing about a
+  // command whose whole job is to take parts off the shelf.
+  console.log(String.fromCharCode(10) + 'build');
+
+  await t.run('proj new BuildTest');
+  const bprojs = await api.get('/api/projects');
+  const bproj = bprojs.find(p => p.name === 'BuildTest');
+  const stockItem = (await api.get('/api/items?q=breadboard')).rows[0];
+  const qtyBefore = stockItem.qty;
+
+  await fetch(`${BASE}/api/projects/${bproj.pid}/bom/${stockItem.cid}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ need: 2 }),
+  });
+
+  await t.run('build BuildTest');
+  await page.waitForTimeout(600);
+  const afterBuild = await api.get(`/api/items/${stockItem.cid}`);
+  check('build takes the parts off the shelf', afterBuild.qty === qtyBefore - 2,
+    `qty ${qtyBefore} -> ${afterBuild.qty}, expected ${qtyBefore - 2}`);
+
+  const built = (await api.get('/api/projects')).find(p => p.name === 'BuildTest');
+  check('build marks the project as building', built.status === 'building',
+    `status is ${built.status}`);
+
+  await t.run('undo');
+  await page.waitForTimeout(400);
+  const afterBuildUndo = await api.get(`/api/items/${stockItem.cid}`);
+  check('undo puts the parts back', afterBuildUndo.qty === qtyBefore,
+    `qty is ${afterBuildUndo.qty}, expected ${qtyBefore}`);
+  await t.run('proj del BuildTest');
+
+  // ── the sections manager edits the real layout ────────────────────────────
+  console.log(String.fromCharCode(10) + 'sections manager');
+  await t.run('sections');
+  check('the sections manager lists departments', /ELECTRICAL/i.test(await t.screen()),
+    (await t.screen()).slice(0, 200));
+  await t.key('Escape');
+
+  await t.run('class 44 = PLYWOOD SHEETS');
+  const secs = await api.get('/api/sections?dept=4');
+  check('renaming a shelf writes it to the database',
+    secs.some(x => x.code === '44' && x.label === 'PLYWOOD SHEETS'),
+    JSON.stringify(secs.map(x => `${x.code}:${x.label}`)));
+
+  await t.run('class 3 = METALWORKING TEST');
+  const depts = await api.get('/api/depts');
+  check('renaming a department writes it to the database',
+    depts[3].label === 'METALWORKING TEST', depts[3].label);
+  await t.run('undo');
+  await t.run('undo');
+
+  // ── CSV export contains the actual inventory ──────────────────────────────
+  console.log(String.fromCharCode(10) + 'export');
+  const errsBeforeExport = consoleErrors.length;
+  await t.run('export');
+  await page.waitForTimeout(900);
+  const csv = await t.screen();
+  const exportDbItems = (await api.get('/api/stats')).items;
+  // textContent joins the terminal's divs WITHOUT newlines, so counting lines here can
+  // never work — check for the header and for a row that must be in the output.
+  check('CSV export renders the header and rows',
+    /name,bin,qty/i.test(csv) && /Breadboard/i.test(csv),
+    csv.slice(-200));
+  check('export reads the whole inventory, not just the screen',
+    (await page.evaluate(() => state.items.length)) === exportDbItems,
+    `${await page.evaluate(() => state.items.length)} rows loaded vs ${exportDbItems} in the database`);
+  await t.key('Escape');
+
+  // ── spreadsheet import, end to end ────────────────────────────────────────
+  // The riskiest ported feature and the least exercised: the wizard parses, maps
+  // columns, guesses bins and commits in one bulk insert. Driven through the paste
+  // path, which is the same code the file picker feeds.
+  console.log(String.fromCharCode(10) + 'spreadsheet import');
+
+  const beforeImport = (await api.get('/api/stats')).items;
+  await t.run('import paste');
+  check('import paste opens the paste mode', /paste/i.test(await t.screen()),
+    (await t.screen()).slice(-160));
+
+  for (const row of [
+    'Name,Qty,Min,Bin,Notes',
+    'Imported Widget A,12,3,1310,from a sheet',
+    'Imported Widget B,7,2,1311,second row',
+    'Imported Widget C,4,1,,no bin given',
+  ]) await t.run(row);
+  await t.run('end');
+
+  const wizard = await t.screen();
+  check('the wizard reads the pasted rows', /IMPORT/i.test(wizard) && /3 data rows|rows/i.test(wizard),
+    wizard.slice(-320));
+  check('it detects the header row', /header\s*detected/i.test(wizard), wizard.slice(-320));
+
+  await t.run('apply');
+  await page.waitForTimeout(900);
+
+  const afterImport = await api.get('/api/stats');
+  check('import added every row to the database',
+    afterImport.items === beforeImport + 3,
+    `items ${beforeImport} -> ${afterImport.items}, expected +3`);
+
+  // search is substring-based, so "Widget A" also matches "Widget C" — pick the exact row
+  const imported = await api.get('/api/items?q=Imported Widget&limit=50');
+  const impA = imported.rows.find(r => r.name === 'Imported Widget A');
+  check('imported fields land in the right columns',
+    !!impA && impA.qty === 12 && impA.min === 3 && impA.bin === 1310,
+    JSON.stringify(impA || imported.rows.map(r => r.name)));
+
+  // A row with no bin is filed by guessing the department from its name; an unguessable
+  // name lands in department 0 (GENERAL), whose bins are legitimately below 1000.
+  const impC = imported.rows.find(r => r.name === 'Imported Widget C');
+  check('a row with no bin is filed in a real bin',
+    !!impC && impC.bin > 0 && impC.bin <= 9999 && (impC.bin % 100) >= 10,
+    `bin is ${impC && impC.bin}`);
+
+  // the whole sheet has to back out as ONE step, not three
+  await t.run('undo');
+  await page.waitForTimeout(400);
+  const importUndone = (await api.get('/api/stats')).items;
+  check('the whole import undoes in one step', importUndone === beforeImport,
+    `items ${importUndone}, expected back to ${beforeImport}`);
 
   // ── stale-data guard ──────────────────────────────────────────────────────
   // The service worker caches the app shell. It must NOT cache /api/, or the same

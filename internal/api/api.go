@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{pid}", s.deleteProject)
 	mux.HandleFunc("POST /api/projects/{pid}/active", s.activateProject)
 	mux.HandleFunc("GET /api/projects/{pid}/bom", s.projectBom)
+	mux.HandleFunc("POST /api/projects/{pid}/build", s.buildProject)
 	mux.HandleFunc("PUT /api/projects/{pid}/bom/{cid}", s.putBomLine)
 	mux.HandleFunc("DELETE /api/projects/{pid}/bom/{cid}", s.deleteBomLine)
 	mux.HandleFunc("GET /api/shared-parts", s.sharedParts)
@@ -600,6 +601,35 @@ func (s *Server) sharedParts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sp)
+}
+
+// buildProject consumes a project's BOM in one transaction. A shortage comes back as
+// 409 with the lines that are short, so the terminal can list them.
+func (s *Server) buildProject(w http.ResponseWriter, r *http.Request) {
+	pid, err := pathInt(r, "pid")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var body struct {
+		Partial bool `json:"partial"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	taken, short, err := s.st.BuildProject(r.Context(), pid, body.Partial)
+	if store.ErrShort(err) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "not enough stock", "short": short,
+		})
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"taken": taken, "short": short})
 }
 
 func (s *Server) listLog(w http.ResponseWriter, r *http.Request) {
