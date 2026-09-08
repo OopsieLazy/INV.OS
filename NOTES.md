@@ -2058,3 +2058,56 @@ from a standstill. It does NOT reset when a held pointer is released — the mot
 already at full speed there, and re-ramping would look like a stall.
 
 92 UI checks.
+
+---
+
+# v24.0 — settings audit: three bugs, two new controls, and idle stop
+
+`test/ui/settings-audit.mjs` walks every setting and asks two questions: does changing it
+take effect NOW, and does it survive a reload. A setting that stores a number and changes
+nothing until restart is worse than no setting, because it looks like it worked.
+
+## Bugs found
+1. **Orbit motion did nothing from the settings screen.** `cfgadj` special-cased exactly
+   one key (`launchZoom`) and otherwise just stored the value, so flipping "orbit motion"
+   set `cfg("orbit")` to 1 while `gOrbit` stayed false. The command worked; the setting
+   did not. Same switch, two answers.
+2. **Switching the galaxy off left you sitting in it.** `galaxyOn()` guarded every
+   ENTRY to the galaxy, but nothing checked the view you were already in.
+3. **The auto-orbit stepper snapped instead of stepping.** Its default (0.0022) was not a
+   multiple of its step (0.001), and `setCfg` rounds to the step grid — so the first
+   press jumped to 0.003 rather than 0.0032. Step is now 0.0002, which divides the
+   default and gives the control real resolution.
+
+All three had the same root cause: no single place reconciled the live graph with the
+settings. `applyCfg()` is that place now, and both `cfgadj` and `cfgreset` call it.
+
+Worth noting: the "reset also stops anything it turned off" check was PASSING before the
+fix — because orbit could never be turned on from settings in the first place. It passed
+for the wrong reason, which is its own kind of failure.
+
+## New settings
+- **orbit speed** (0.2x–3x) — the master rate from the orbit spec's tuning notes, which
+  was a hardcoded `0.02` in the middle of a function.
+- **graph nodes** (1k–50k) — how many parts the graph draws. Worth exposing now that it
+  scales: a slow machine can dial it down, a big shop can push it up. Changing it
+  re-reads the graph immediately.
+
+## Idle stop (new, default ON)
+The graph repainted every frame forever. The force simulation stops when it settles, but
+the drift and the redraw never did — so a still picture cost a full frame budget
+indefinitely. On a shop tablet that is battery burned on nothing.
+
+The loop now parks itself when there is genuinely nothing to animate: layout settled, no
+orbit, no pointer down, nothing hovered, sweep finished. `gWake()` restarts it, and
+waking is deliberately generous — any pointer or key activity in the window wakes it,
+whatever it lands on. A frozen-looking graph is far worse than a few extra frames, and
+over-waking costs exactly one frame, because that frame parks the loop again if nothing
+has changed.
+
+## Verified
+26 checks in the settings audit. Two of them were rewritten after they failed to observe
+what they claimed: waking cannot be caught by sampling `gRAF`, because waking schedules
+ONE frame that immediately re-parks — it has to be measured by counting draws.
+
+92 UI checks, orbit metrics unchanged (p95 1px, zero flips, eased handoff).

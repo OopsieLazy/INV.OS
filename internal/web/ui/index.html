@@ -1240,6 +1240,34 @@ const MENU = [
   {k:"install",d:"install as an app",                run:"install"},
   {k:"keys",   d:"keyboard shortcuts",               run:"keys"},
 ];
+/* applyCfg makes a settings change take effect NOW.
+   Before this, `cfgadj` special-cased exactly one key (launchZoom) and everything else
+   only stored a number — so turning orbit motion on in the settings screen changed the
+   value and nothing else, and switching the galaxy off while looking at the galaxy left
+   you sitting in a view that was supposed to be gone. A setting that stores a value and
+   changes nothing is worse than no setting, because it looks like it worked. */
+function applyCfg(changedKey){
+  gWake();
+  // orbit motion is both a stored setting and a running mode; keep them in step
+  const wantOrbit = !!cfg("orbit");
+  if (wantOrbit !== gOrbit){
+    gOrbit = wantOrbit;
+    gOrbitInit = false;
+    if (gOrbit){
+      if (gView.kind!=="galaxy" && gView.kind!=="projects") setGraphView({kind:"galaxy"});
+      if (graphMode==="off") setGraph("split");
+      gAlpha = Math.max(gAlpha, 0.6);      // settle, then take off
+    }
+  }
+  // if the galaxy has just been switched off, leave it
+  if (!galaxyOn() && gView.kind==="galaxy") setGraphView({kind:"projects"});
+  // the zoom applies to what is on screen now, not only to the next view opened
+  if (changedKey==="launchZoom" && graphMode!=="off"){ gUserAdjusted=false; gScale=gFitScale(); }
+  // a different node budget means a different graph
+  if (changedKey==="graphNodes"){ graphItemsLoaded=false; graphSync(); }
+  if (graphMode!=="off") gAlpha=Math.max(gAlpha,0.05);
+}
+
 function renderSettings(focusKey){
   atHome=false; menuOpen=false;
   out.innerHTML=""; live.innerHTML=""; browseSel=-1;
@@ -2315,13 +2343,13 @@ async function exec(line){
       const m=SETTINGS.find(x=>x.k===k); if(!m) return;
       setCfg(k, cfg(k) + (dir==="up"?m.step:-m.step));
       await save();
-      if (graphMode!=="off"){ if(k==="launchZoom"){ gScale=cfg("launchZoom"); } gAlpha=Math.max(gAlpha,0.05); }
+      applyCfg(k);
       renderSettings(k);
       return;
     }
 
     case "cfgreset": {
-      state.cfg={}; await save(); print("settings reset to defaults.","g"); renderSettings(); return;
+      state.cfg={}; await save(); applyCfg(); print("settings reset to defaults.","g"); renderSettings(); return;
     }
 
     case "theme": {
@@ -3195,7 +3223,7 @@ async function exec(line){
 /* ---------- brain graph: zero-dependency force-directed canvas ---------- */
 /* The graph gets its OWN bounded fetch. state.items is just the current screen, and
    a force simulation over 100,000 nodes is neither drawable nor useful, so the
-   inventory view draws the first GRAPH_ITEM_CAP parts and the label says when it is
+   inventory view draws the first graphItemCap() parts and the label says when it is
    showing a sample. */
 /* How many parts the graph will draw. Raised from 1,500 once the renderer stopped
    drawing each one as shapes — measured at 20,000 nodes the frame costs about 13ms,
@@ -3203,8 +3231,8 @@ async function exec(line){
 
    It used to ask for 1,500 in a single request while the server caps a page at 1,000,
    so the graph was quietly drawing 1,000 and the constant was lying. It pages now. */
-const GRAPH_ITEM_CAP = 20000;
 const GRAPH_PAGE = 1000;              // the server's own per-request ceiling
+function graphItemCap(){ return cfg("graphNodes"); }
 let graphItems = [], graphItemsTotal = 0;
 let graphItemsLoaded = false, graphItemsLoading = false;
 
@@ -3212,7 +3240,8 @@ async function refreshGraphItems(){
   try {
     const out = [];
     let total = 0;
-    while (out.length < GRAPH_ITEM_CAP){
+    const cap = graphItemCap();
+    while (out.length < cap){
       const page = await DB.peek({limit:GRAPH_PAGE, offset:out.length, sort:"bin"});
       total = page.total;
       out.push(...page.rows);
@@ -3260,7 +3289,7 @@ let hudOn=true, sweepT=0;   // HUD frame + boot-sweep animation clock
 // tunable settings (persisted in state.cfg) with metadata for the settings screen
 const SETTINGS = [
   {k:"launchZoom", label:"launch zoom",    min:0.6, max:3,   step:0.1,  def:1.8,  fmt:v=>v.toFixed(1)+"x"},
-  {k:"driftSpeed", label:"auto-orbit",     min:0,   max:0.01,step:0.001,def:0.0022,fmt:v=>v===0?"off":Math.round(v*1000)+""},
+  {k:"driftSpeed", label:"auto-orbit",     min:0,   max:0.01,step:0.0002,def:0.0022,fmt:v=>v===0?"off":(v*1000).toFixed(1)},
   {k:"glow",       label:"glow strength",  min:0,   max:2,   step:0.1,  def:1,    fmt:v=>Math.round(v*100)+"%"},
   {k:"dust",       label:"dust field",     min:0,   max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
   {k:"labelZoom",  label:"part-label zoom", min:0.8,max:2.5, step:0.1,  def:1.1,  fmt:v=>v.toFixed(1)+"x"},
@@ -3270,6 +3299,15 @@ const SETTINGS = [
   // Orbit motion repaints every frame, so it is off by default and remembered per
   // device — turning it on is a deliberate choice about spending the GPU.
   {k:"orbit",      label:"orbit motion",   min:0,   max:1,   step:1,    def:0,    fmt:v=>v?"on":"off"},
+  // The master speed from the orbit spec's tuning notes, which was buried in the code.
+  {k:"orbitSpeed", label:"orbit speed",    min:0.2, max:3,   step:0.1,  def:1,    fmt:v=>v.toFixed(1)+"x"},
+  // How many parts the graph will draw. Worth exposing now that it scales: a slow
+  // machine can dial it down, and a big shop can push it up and watch the frame cost.
+  {k:"graphNodes", label:"graph nodes",    min:1000,max:50000,step:1000,def:20000,fmt:v=>v>=1000?(v/1000)+"k":String(v)},
+  // The graph otherwise repaints every frame forever, even sitting still: the force
+  // simulation stops once it settles, but the drift and the redraw never do. On a shop
+  // tablet that is battery burned on a picture that is not changing.
+  {k:"idleStop",   label:"pause when idle", min:0,  max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
 ];
 function cfg(k){ const m=SETTINGS.find(s=>s.k===k); return (state.cfg&&state.cfg[k]!==undefined)?state.cfg[k]:m.def; }
 function setCfg(k,v){ const m=SETTINGS.find(s=>s.k===k);
@@ -3421,6 +3459,7 @@ function buildGraphData(){
   });
   gNodes=nodes; gEdges=edges.map(e=>({a:nid.get(e.a), b:nid.get(e.b), w:e.w}));
   gAlpha=0.9;
+  gWake();
 }
 function hexA(h,a){ h=h.replace("#",""); if(h.length===3)h=h.split("").map(c=>c+c).join("");
   const n=parseInt(h,16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
@@ -3754,6 +3793,25 @@ function gPhysics(a){
   gAlpha*=0.985;
 }
 
+/* gWake restarts the render loop after it has parked itself.
+   Every path that changes what should be on screen has to call this, or the graph looks
+   frozen — which is why it is one function and not a line copied around. */
+function gWake(){
+  if (!gRAF && (graphMode!=="off" || gPopped())){
+    gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
+  }
+}
+
+/* gIdle reports that there is genuinely nothing left to animate: the layout has
+   settled, nothing is orbiting, no pointer is down and nothing is hovered. */
+function gIdle(){
+  return !!cfg("idleStop")
+      && gAlpha <= 0.015
+      && !(gOrbit && (gView.kind==="galaxy" || gView.kind==="projects"))
+      && !gLastXY && !gDrag && !gHover
+      && sweepDone();
+}
+
 function gTick(){
   const a=gAlpha;
 
@@ -3771,7 +3829,7 @@ function gTick(){
       if (!held){
         gOrbitRamp = Math.min(1, gOrbitRamp + 1/75);        // ~1.25s at 60fps
         const t = gOrbitRamp;
-        stepOrbits(t*t*(3-2*t));                            // smoothstep: gentle at both ends
+        stepOrbits(t*t*(3-2*t) * cfg("orbitSpeed"));        // smoothstep, then the user's rate
       }
       gAlpha = 0.001;
       if (g3d && gAutoRot && !held) gYaw += cfg("driftSpeed");
@@ -3787,10 +3845,14 @@ function gTick(){
     // start — once, and only while the view is still the app's to choose.
     if (gAlpha<=0.015 && !gUserAdjusted) gFitView();
   }
-  if (g3d && gAutoRot) gYaw+=cfg("driftSpeed");   // gentle drift (settings)
+  const idle = gIdle();
+  if (g3d && gAutoRot && !idle) gYaw+=cfg("driftSpeed");   // gentle drift (settings)
   gDraw();
   if (graphMode!=="off" && (performance.now()&255)<20) updateHud();  // occasional stat refresh
   if (graphMode==="off" && !gPopped()){ gRAF=null; return; }
+  // Nothing is moving: draw this frame and stop asking for more. Anything that changes
+  // the picture calls gWake().
+  if (idle){ gRAF=null; return; }
   gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
 }
 /* project a 3D point to screen; returns {sx,sy,scale,depth} */
@@ -3961,6 +4023,10 @@ function gDraw(){
   drawSweep(x,W,H);
 }
 /* radar boot-sweep: one rotation on graph open, lights the scene */
+// The sweep is a one-shot animation after the pane opens; parking mid-sweep would
+// freeze it half-drawn.
+function sweepDone(){ return (performance.now() - sweepT) > 2600; }
+
 function drawSweep(x,W,H){
   if (gStyle!=="holo") return;
   const dur=1100, t=performance.now()-sweepT;
@@ -4119,6 +4185,7 @@ function setGraph(m){
   if (!gRAF) gRAF = gPopped() ? gWin.requestAnimationFrame(gTick) : requestAnimationFrame(gTick);
 }
 function setGraphView(v){
+  gWake();
   // every route into the galaxy funnels through here, so one guard covers the command,
   // the view cycle, the HUD button and the demo
   if (v && v.kind==="galaxy" && !galaxyOn()) v={kind:"projects"};
@@ -4210,6 +4277,7 @@ function gFitView(){
 let gUserAdjusted = false;
 
 function graphHome(){          // recenter camera / view — the auto-home
+  gWake();
   gUserAdjusted = false;
   gFitView();
   gYaw=0.5; gPitch=-0.35; gAutoRot=true; gHover=null;
@@ -4217,6 +4285,7 @@ function graphHome(){          // recenter camera / view — the auto-home
 }
 async function graphSync(){
   if (graphMode==="off") return;
+  gWake();
   graphItemsLoaded = false;   // the inventory changed; re-read the graph's sample
   await Promise.all([refreshGraphItems(), gView.kind==="inv" ? null : loadProjects()]);
   buildGraphData(); updateGLabel();
@@ -4224,7 +4293,17 @@ async function graphSync(){
 /* graph input — bound to the inline pane and, when popped, the second window */
 function bindGraphPointer(cv, win){
   const xy=e=>{ const r=cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; };
+
+  /* Waking has to be generous. A graph that looks frozen is far worse than a few extra
+     frames, and the canvas sits under the HUD overlay, so events aimed "at the graph"
+     often land on something else. Any pointer activity in the window wakes it; if
+     nothing is actually moving, gTick draws one frame and parks again, so the cost of
+     over-waking is exactly that one frame. */
+  ["mousemove","mousedown","wheel","touchstart","touchmove","keydown"].forEach(ev=>{
+    win.addEventListener(ev, gWake, {passive:true});
+  });
   cv.addEventListener("mousedown", e=>{
+    gWake();
     const [ox,oy]=xy(e);
     const n=gPick(ox,oy);
     gMoved=false; gLastXY=[ox,oy];
@@ -4233,9 +4312,14 @@ function bindGraphPointer(cv, win){
   win.addEventListener("mousemove", e=>{
     const [ox,oy]=xy(e);
     if (!gLastXY){
-      if ((graphMode!=="off"||gPopped()) && e.target===cv) gHover=gPick(ox,oy);
+      if ((graphMode!=="off"||gPopped()) && e.target===cv){
+        const was=gHover;
+        gHover=gPick(ox,oy);
+        if (gHover!==was) gWake();     // the highlight changed, so redraw
+      }
       return;
     }
+    gWake();
     const dx=ox-gLastXY[0], dy=oy-gLastXY[1];
     if (Math.abs(dx)+Math.abs(dy)>3) gMoved=true;
     if (gDrag){ gDrag.x+=dx/gScale; gDrag.y+=dy/gScale; gAlpha=Math.max(gAlpha,0.3); }
@@ -4260,11 +4344,13 @@ function bindGraphPointer(cv, win){
   });
   cv.addEventListener("wheel", e=>{
     e.preventDefault();
+    gWake();
     gUserAdjusted=true;                       // stop auto-fitting over their choice
     const f=e.deltaY<0?1.12:0.89;
     gScale=Math.min(6,Math.max(0.02,gScale*f));
   }, {passive:false});
   cv.addEventListener("touchstart", e=>{
+    gWake();
     const t=e.touches[0], r=cv.getBoundingClientRect();
     const ox=t.clientX-r.left, oy=t.clientY-r.top;
     const n=gPick(ox,oy);
