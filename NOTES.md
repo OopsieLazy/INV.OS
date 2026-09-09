@@ -3066,3 +3066,54 @@ still to come.
 Frame timing is unchanged: p50 13.3ms, zero stutters.
 
 55 settings checks (2 new), 138 UI, 24 demo, 27 security, 11 injection, 31 store.
+
+## v26.5 — launch zoom means something again, and the encryption toggle is a toggle
+
+### Launch zoom did nothing
+
+Reported right after the camera fix, and true. Measured, 411 nodes:
+
+```
+  launchZoom 0.6  ->  settled at 0.60   (content fits at 0.679)
+  launchZoom 1.8  ->  settled at 0.702  (content fits at 0.690)
+  launchZoom 3.0  ->  settled at 0.693  (content fits at 0.646)
+```
+
+1.8 and 3.0 land in the same place. `gFitScale` was `min(launch, fit)`, so the setting only
+ever acted as a MAXIMUM — on any graph bigger than the window, which is most of them, the
+fit won and the setting was inert. Easing to the fit every frame just made that obvious;
+before, you at least saw the launch zoom for the eight seconds before the snap.
+
+An absolute scale cannot mean anything anyway. 1.8 frames a hundred items and a hundred
+thousand items completely differently, so the same number gives a different picture in
+every shop.
+
+It is a MULTIPLE of "everything visible" now — which is what the `x` in the readout always
+implied. 1.0 is the whole graph on screen, 1.5 is half again closer. Measured after: 0.6
+gives 0.63x the fit, 1.0 gives 1.05x, 1.8 gives 1.86x. Respected at every value.
+
+Relabelled "launch framing", default 1.0, and the readout says "everything visible" rather
+than a bare number.
+
+### The encryption toggle had no toggle
+
+`lan http` and `lan https` worked from the terminal and the API — there were passing tests
+for both. What did not exist was anything to click, and the settings screen is where people
+look for a setting. That is what "doesn't toggle" meant.
+
+There is a row under STATION now, shown only when shop access is on, because offering the
+switch while nothing is listening is offering a switch with nothing on the other end. It
+reads its state from the server rather than from `state.cfg` — encryption is a property of
+the station, not a per-device preference like everything else on that screen.
+
+The test now drives the real UI: type the commands, then click the row, and check the
+server actually changed each time. Testing the API alone is what let a working feature sit
+there with no way to reach it.
+
+### CHANGELOG.md
+
+A short, navigable summary of the whole build for people arriving at the repo: what changed
+from the HTML app, the numbers, what is knowingly still broken, and what the tags mean.
+NOTES.md stays the long version.
+
+138 UI, 55 settings, 31 security, 24 demo, 11 injection, 31 store.

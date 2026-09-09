@@ -183,6 +183,53 @@ const justOn = await (await fetch(BASE + '/api/lan', {
 check('turning shop access on does not quietly disable encryption',
   justOn.secure === true, JSON.stringify(justOn));
 
+// The toggle has to work from the UI, not just from the API — that is where it is
+// actually used, and where it was reported not working.
+{
+  const { chromium } = await import('playwright-core');
+  const { homedir } = await import('node:os');
+  const { existsSync } = await import('node:fs');
+  const chrome = (() => {
+    const root = join(homedir(), 'AppData/Local/ms-playwright');
+    for (const b of ['chromium-1217', 'chromium-1216'])
+      for (const sub of ['chrome-win64/chrome.exe', 'chrome-win/chrome.exe', 'chrome-linux/chrome']) {
+        const p2 = join(root, b, sub);
+        if (existsSync(p2)) return p2;
+      }
+  })();
+  const browser = await chromium.launch({ executablePath: chrome, headless: true });
+  const page = await browser.newPage({ viewport: { width: 1400, height: 860 } });
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(700);
+  const type = async cmd => {
+    await page.fill('#cmd', '');
+    await page.type('#cmd', cmd, { delay: 1 });
+    await page.press('#cmd', 'Enter');
+    await page.waitForTimeout(700);
+  };
+  const secure = async () => (await (await fetch(BASE + '/api/server')).json()).secure;
+
+  await type('lan on');
+  await type('lan http');
+  check('`lan http` from the terminal actually turns encryption off',
+    (await secure()) === false);
+  await type('lan https');
+  check('`lan https` turns it back on', (await secure()) === true);
+
+  // And the settings screen row, which is where most people will find it.
+  await type('settings');
+  const hasRow = await page.evaluate(() =>
+    !!document.querySelector('[data-menu="run:__enctoggle"]'));
+  check('settings shows an encryption row while shop access is on', hasRow);
+  if (hasRow) {
+    await page.evaluate(() => document.querySelector('[data-menu="run:__enctoggle"]').click());
+    await page.waitForTimeout(900);
+    check('clicking it toggles encryption', (await secure()) === false);
+    await type('lan https');
+  }
+  await browser.close();
+}
+
 // ── flooding ────────────────────────────────────────────────────────────────
 // Not just malice: a device stuck in a retry loop can take a shop's station down.
 const burst = await Promise.all(

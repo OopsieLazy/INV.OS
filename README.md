@@ -138,5 +138,10 @@ the app.
 
 ## Status
 
-Working and used, not yet 1.0. [NOTES.md](NOTES.md) is the changelog — it records what was
-measured and why, not just what changed. [ROADMAP-v2.md](ROADMAP-v2.md) is the plan.
+**v0.1.0.** Working and in use, not yet 1.0.
+
+- **[CHANGELOG.md](CHANGELOG.md)** — what this build is, what changed, and what is
+  knowingly still broken
+- **[NOTES.md](NOTES.md)** — the long version: one section per release, with the
+  measurements and the reasoning
+- **[ROADMAP-v2.md](ROADMAP-v2.md)** — what is next and why

@@ -90,6 +90,29 @@ await page.waitForTimeout(ZOOM_AT);
 
 // WATCH=1: no wheel at all — just record what the camera does on its own after the
 // graph opens. The complaint is a late zoom-OUT with nobody touching anything.
+// LAUNCH=<n>: set launch zoom before opening, then report where the camera ends up.
+// "launch zoom" should be how close it OPENS — and the fit should only ever pull back
+// from it when the content genuinely does not fit.
+if (process.env.LAUNCH) {
+  const want = Number(process.env.LAUNCH);
+  await page.evaluate(v => setCfg('launchZoom', v), want);
+  await run('graph off');
+  await run('graph inv');
+  await run('graph 3d');
+  const r = await page.evaluate(async () => {
+    await new Promise(r2 => setTimeout(r2, 9000));
+    let m = 0; for (const n of gNodes) m = Math.max(m, Math.hypot(n.x, n.y, n.z || 0));
+    const { W, H } = gDims();
+    return { scale: +gScale.toFixed(3), fit: +((Math.min(W, H) * 0.45) / m).toFixed(3),
+             launch: cfg('launchZoom'), nodes: gNodes.length };
+  });
+  console.log(`  launchZoom ${r.launch}  ->  settled at ${r.scale}   ` +
+    `(content would fit at ${r.fit}, ${r.nodes} nodes)`);
+  await browser.close(); server.kill();
+  await new Promise(res => server.on('exit', res));
+  process.exit(0);
+}
+
 if (process.env.WATCH) {
   const trace = await page.evaluate(async () => {
     const ex = () => { let m = 0; for (const n of gNodes) m = Math.max(m, Math.hypot(n.x, n.y, n.z || 0)); return m; };

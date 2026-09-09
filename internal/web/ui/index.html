@@ -1592,7 +1592,30 @@ function renderSettings(focusKey){
         .filter(u => !/localhost|127\.0\.0\.1/.test(u))
         .forEach(u => print("                    " + u, "g"));
       if (serverInfo && !serverInfo.tokenSet)
-        print("                    no token — anyone on this network can edit","a");
+        print("                    no key — anyone on this network can edit","a");
+
+      /* Encryption sits under shop access because that is the only thing it affects, and
+         it is only shown when shop access is ON — offering it while nothing is listening
+         is offering a switch with nothing on the other end.
+
+         It is a SERVER setting, not a per-device one like the rest of this screen, so it
+         reads its state from serverInfo rather than from state.cfg. */
+      const enc = serverInfo.secure !== false;
+      const e = document.createElement("div");
+      e.className = "line idx g";
+      e.dataset.menu = "run:__enctoggle";
+      const en = document.createElement("span");
+      en.className = "c"; en.textContent = "  " + "encryption".padEnd(16);
+      const ev = document.createElement("span");
+      ev.className = enc ? "" : "a";
+      ev.textContent = " " + (enc ? "https" : "http").padStart(5) + " ";
+      const eh = document.createElement("span");
+      eh.className = "d";
+      eh.textContent = enc
+        ? "  encrypted — click for plain http, for devices that cannot take a certificate"
+        : "  NOT encrypted — anything on this network can read it. click to turn it back on";
+      e.appendChild(en); e.appendChild(ev); e.appendChild(eh);
+      out.appendChild(e);
     }
 
     // window mode is decided at launch, so it is stated rather than offered as a
@@ -1862,7 +1885,7 @@ async function countInput(line){
 }
 
 /* ---------- live search under the prompt ---------- */
-const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip","license","about","source","feedback","bug","key","shopkey",
+const VERBS = ["add","edit","del","rm","take","stock","add-stock","list","ls","l","bins","low","stats","tidy","doctor","normalize","fsck","merge","map","remap","sec","proj","project","build","graph","labels","label","scan","install","backup","create","new","keys","menu","theme","settings","config","set","cfgadj","cfgreset","bar","titlebar","health","status","rollback","photo","count","template","server","db","database","setup","shop","demo","welcome","firstrun","__fr_import","__fr_fresh","__fr_demo","__fr_go","sections","shelves","__secedit","__secadd","galaxy","report","lan","__lantoggle","__enctoggle","__toggle","__shopdefault","who","iam","tutorial","tour","skip","license","about","source","feedback","bug","key","shopkey",
                "export","import","help","clear","cls","home","reset","find","f","class","classes","move","info","undo","u","recent","log","y","n","yes","no","cancel","end"];
 /* Live search now crosses the network on every keystroke, which introduces a
    hazard the in-memory version did not have: a slow reply for "wid" can land
@@ -2555,6 +2578,14 @@ async function exec(line){
     case "__lantoggle": {
       const on = !!(serverInfo && serverInfo.lan);
       await run("lan " + (on ? "off" : "on"));
+      await refreshServerInfo();
+      renderSettings();
+      return;
+    }
+
+    case "__enctoggle": {
+      const enc = !(serverInfo && serverInfo.secure === false);
+      await run("lan " + (enc ? "http" : "https"));
       await refreshServerInfo();
       renderSettings();
       return;
@@ -3836,7 +3867,8 @@ const gc=$("gcanvas"), gpane=$("graphpane");
 let hudOn=true, sweepT=0;   // HUD frame + boot-sweep animation clock
 // tunable settings (persisted in state.cfg) with metadata for the settings screen
 const SETTINGS = [
-  {k:"launchZoom", label:"launch zoom",    min:0.6, max:3,   step:0.1,  def:1.8,  fmt:v=>v.toFixed(1)+"x"},
+  {k:"launchZoom", label:"launch framing", min:0.5, max:3,   step:0.1,  def:1,
+    fmt:v=>v===1?"everything visible":(v>1?v.toFixed(1)+"x closer":v.toFixed(1)+"x wider")},
   {k:"driftSpeed", label:"auto-orbit",     min:0,   max:0.01,step:0.0002,def:0.0022,fmt:v=>v===0?"off":(v*1000).toFixed(1)},
   {k:"glow",       label:"glow strength",  min:0,   max:2,   step:0.1,  def:1,    fmt:v=>Math.round(v*100)+"%"},
   {k:"dust",       label:"dust field",     min:0,   max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
@@ -5142,11 +5174,21 @@ function gContentFit(){
   return (Math.min(W,H) * 0.45) / r;
 }
 
+/* Launch zoom is a MULTIPLE of "everything visible", not an absolute scale.
+
+   It used to be absolute, capped by the fit — `min(launch, fit)` — which meant it only
+   ever acted as a maximum. Measured: with 411 nodes the content fits at 0.69, so a launch
+   zoom of 1.8 AND one of 3.0 both settled at 0.70. The setting did nothing at all on any
+   graph bigger than the window, which is most of them.
+   
+   An absolute scale cannot mean anything anyway: 1.8 frames a hundred items and a hundred
+   thousand items completely differently, so the same number gives a different picture in
+   every shop. As a multiple it means one thing everywhere — 1.0 is everything on screen,
+   1.5 is half again closer — which is also what the "x" in the readout always implied. */
 function gFitScale(){
-  const launch = cfg("launchZoom");
   const fit = gContentFit();
-  if (!fit) return launch;
-  return Math.max(0.02, Math.min(launch, fit));
+  if (!fit) return cfg("launchZoom");
+  return Math.max(0.02, Math.min(6, fit * cfg("launchZoom")));
 }
 
 function gFitView(){
