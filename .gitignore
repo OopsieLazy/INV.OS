@@ -32,5 +32,11 @@ invos-rewind.exe
 invos-set.exe
 invos-frame.exe
 
+# Every probe in test/ui builds its own throwaway binary next to the source. They were
+# being listed one at a time, which meant each new probe quietly shipped ~20MB into the
+# repo until somebody noticed. Cover them all.
+/invos-*.exe
+/invos-*.test
+
 # the assembled upload — regenerate with ./make-release.sh
 /release/
