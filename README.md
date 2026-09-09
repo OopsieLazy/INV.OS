@@ -3,8 +3,10 @@
 **A keyboard-first inventory terminal for a workshop.** One file. No install, no runtime,
 no account, no internet. Run it and it opens.
 
-<!-- Replace with a real capture of `graph galaxy` before publishing. It is the hook. -->
-![the project galaxy](docs/galaxy.png)
+![the inventory graph — every part, clustered by shelf](docs/inventory.png)
+
+<sub>Every part in a workshop, clustered by the shelf it lives on. Regenerate with
+`node test/ui/hero-shot.mjs inv`.</sub>
 
 ```
 › 10k

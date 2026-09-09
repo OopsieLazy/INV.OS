@@ -60,8 +60,11 @@ Build it with `./make-release.sh`; everything below is verified by
       you hesitate; hesitation is the thing to fix.
 
 ### 2. The repo
-- [ ] `README.md` first screen: the galaxy image, one sentence, the demo link
-- [ ] a real capture at `docs/galaxy.png` — this is the single most valuable image here
+- [x] `README.md` first screen: the image, one sentence, the demo link
+- [x] a real capture — `docs/inventory.png`, regenerate with `node test/ui/hero-shot.mjs`.
+      **Not the galaxy.** Shooting both made it obvious that the galaxy currently reads as
+      a spider rather than as clusters; the inventory view is the better picture today and
+      it is also the more honest one. See ROADMAP A1.
 - [ ] repo **topics** — paste these into Settings -> General (or the gear beside About):
 
       inventory  inventory-management  selfhosted  self-hosted  sqlite  golang  go
@@ -81,7 +84,7 @@ Build it with `./make-release.sh`; everything below is verified by
       network users be offered the source, and `invos -version`, `/api/server` and the
       app's `license` command all print this address — shipping `REPLACE-ME` would be a
       licence failure, not a typo.
-- [ ] `MANUAL.md`, `NOTES.md`, `ROADMAP-v2.md` linked from the README
+- [x] `MANUAL.md`, `NOTES.md`, `ROADMAP-v2.md` linked from the README
 - [ ] a real "About" one-liner on the repo
 
 ### 3. The release
@@ -107,7 +110,8 @@ the demo cannot drift from the product it is advertising.
 - [ ] type a search, watch it filter instantly
 - [ ] `add` something — show the bin being chosen for you
 - [ ] `labels` → the QR sheet
-- [ ] `graph galaxy` → let it move for five seconds. This is the money shot.
+- [ ] `graph inv` → let it settle and drift for five seconds. This is the money shot
+      (the galaxy is not, yet — see ROADMAP A1).
 - [ ] end on the terminal, not on a logo
 
 ### 5. Yourself

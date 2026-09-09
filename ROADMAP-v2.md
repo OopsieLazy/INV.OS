@@ -80,6 +80,17 @@ Legend: [x] done · [~] partial · [ ] todo · ★ = recommended next
 ═══════════════════════════════════════════════════════════════
 
 ### A1 — R12 Project Galaxy  [x] DONE v19 · orbit mode v21.3
+      ⚠ REOPENED as a LOOK problem (2026-09-09). Shooting the README hero made it plain:
+      the galaxy does not look like the pitch. Projects are flung to the edge and every
+      shared part collapses into one knot in the middle, so it reads as a spider rather
+      than as clusters — the "mini galaxies" idea is not visible at all. Correcting an
+      earlier claim of mine: the galaxy is NOT the money shot today; `graph inv` is, and
+      that is what the README uses. Worth fixing, because the galaxy is the more
+      interesting idea:
+      - [ ] give each project core its own gravity well so its parts stay near it
+      - [ ] a shared part should be pulled toward BOTH projects, not to the centroid of
+            everything — that is what draws a bridge instead of a knot
+      - [ ] shot to check against: `node test/ui/hero-shot.mjs`
 3D projects-as-galaxy-clusters; shared parts = bridges between clusters; grow over time.
 Why first: highest delight-per-effort, reuses the existing 3D engine/themes/HUD, and it's
 the feature the user is most excited about. Standalone — no backend, no data-model change.
