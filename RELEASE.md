@@ -75,15 +75,13 @@ Build it with `./make-release.sh`; everything below is verified by
 - [x] LICENSE — **AGPL-3.0**, verbatim from gnu.org. Free for every shop; if someone runs
       a modified version as a service they must publish their changes. That is the
       standard choice when the SaaS is the business, and this audience recognises it.
-- [ ] **set `INVOS_SOURCE_URL`** — the only thing still blocking a release build:
-
-      INVOS_SOURCE_URL=https://github.com/<you>/invos ./make-release.sh
-
-      It is stamped into the binary at build time, so it is a flag rather than a code
-      edit, and **both build scripts refuse to run without it.** AGPL §13 requires that
-      network users be offered the source, and `invos -version`, `/api/server` and the
-      app's `license` command all print this address — shipping `REPLACE-ME` would be a
-      licence failure, not a typo.
+- [x] **source URL set** — `https://github.com/OopsieLazy/INV.OS`, the default in
+      `main.go` and in both build scripts. `INVOS_SOURCE_URL` still overrides it for a
+      fork. AGPL §13 requires network users be offered the source, and `invos -version`,
+      `/api/server` and the app's `license` command all print it.
+- [x] **remote wired** — `origin` is the repo, and this history has been grafted onto its
+      initial commit with `--allow-unrelated-histories`, so publishing is a normal push
+      rather than a force-push over what is already there.
 - [x] `MANUAL.md`, `NOTES.md`, `ROADMAP-v2.md` linked from the README
 - [ ] a real "About" one-liner on the repo
 

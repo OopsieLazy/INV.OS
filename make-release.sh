@@ -18,7 +18,7 @@ VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 
 # Fail here rather than three steps later: the binaries carry this address, and the
 # licence requires it to be real.
-SOURCE_URL="${INVOS_SOURCE_URL:-https://github.com/REPLACE-ME/invos}"
+SOURCE_URL="${INVOS_SOURCE_URL:-https://github.com/OopsieLazy/INV.OS}"
 if [[ "$SOURCE_URL" == *REPLACE-ME* ]]; then
   echo "!! Set INVOS_SOURCE_URL to the real repo before cutting a release."
   echo "   AGPL-3.0 requires the binary to tell network users where its source is."

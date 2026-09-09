@@ -38,7 +38,7 @@ AGPL-3.0. sourceURL is not decoration: section 13 requires that anyone who inter
 	exactly that. So the address has to travel WITH the binary rather than living on a
 	website somebody might not find — `invos -version` prints it, and the app shows it.
 */
-var sourceURL = "https://github.com/REPLACE-ME/invos"
+var sourceURL = "https://github.com/OopsieLazy/INV.OS"
 
 // Stamped at build time like the version, so publishing under a different account or a
 // fork is a build flag rather than a code edit:

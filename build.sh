@@ -20,7 +20,7 @@ VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 # AGPL section 13: a network user must be offered the source, so the address ships INSIDE
 # the binary. Refusing to build with the placeholder is the only reliable way to be sure a
 # release never goes out claiming its source lives at REPLACE-ME.
-SOURCE_URL="${INVOS_SOURCE_URL:-https://github.com/REPLACE-ME/invos}"
+SOURCE_URL="${INVOS_SOURCE_URL:-https://github.com/OopsieLazy/INV.OS}"
 if [[ "$SOURCE_URL" == *REPLACE-ME* ]]; then
   echo "!! INVOS_SOURCE_URL is not set."
   echo "   AGPL-3.0 requires the binary to tell network users where its source is."
