@@ -40,3 +40,6 @@ invos-frame.exe
 
 # the assembled upload — regenerate with ./make-release.sh
 /release/
+
+# local dev tooling — not part of the program
+CLAUDE.md
