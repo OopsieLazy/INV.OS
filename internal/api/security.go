@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -23,14 +24,17 @@ import (
 
 // ── security headers ────────────────────────────────────────────────────────
 
-/* The UI is entirely self-contained — no CDN, no external font, no analytics, and no
-   eval — so it can be locked down about as hard as a browser allows.
+/*
+The UI is entirely self-contained — no CDN, no external font, no analytics, and no
 
-   'unsafe-inline' is present because the interface IS one inline script and one inline
-   style block; that is the single-file design, not an oversight. Everything that would
-   let injected markup reach outward is off: no frames, no plugins, no form posts, no base
-   rewriting, and connect-src is same-origin so a script that did get in could not send
-   the inventory anywhere. */
+	eval — so it can be locked down about as hard as a browser allows.
+
+	'unsafe-inline' is present because the interface IS one inline script and one inline
+	style block; that is the single-file design, not an oversight. Everything that would
+	let injected markup reach outward is off: no frames, no plugins, no form posts, no base
+	rewriting, and connect-src is same-origin so a script that did get in could not send
+	the inventory anywhere.
+*/
 const contentSecurityPolicy = "default-src 'self'; " +
 	"script-src 'self' 'unsafe-inline'; " +
 	"style-src 'self' 'unsafe-inline'; " +
@@ -68,18 +72,21 @@ func (s *Server) secure(next http.Handler) http.Handler {
 
 // ── cross-site request forgery ──────────────────────────────────────────────
 
-/* A page on another site cannot READ our responses — there are no CORS headers, so the
-   browser blocks that. It can still SEND, and that is the hole worth closing: a tab open
-   on any site could POST to http://192.168.1.40:8137/api/items and change the shop's
-   inventory without ever seeing a reply.
+/*
+A page on another site cannot READ our responses — there are no CORS headers, so the
 
-   Two checks, because browsers of different ages give us different things:
+	browser blocks that. It can still SEND, and that is the hole worth closing: a tab open
+	on any site could POST to http://192.168.1.40:8137/api/items and change the shop's
+	inventory without ever seeing a reply.
 
-     Sec-Fetch-Site  modern, and the browser sets it — a page cannot lie about it.
-     Origin          older, and absent on same-origin navigations, hence the fallback.
+	Two checks, because browsers of different ages give us different things:
 
-   Only state-changing methods are guarded. A GET that changes nothing is not worth the
-   compatibility risk, and none of ours do. */
+	  Sec-Fetch-Site  modern, and the browser sets it — a page cannot lie about it.
+	  Origin          older, and absent on same-origin navigations, hence the fallback.
+
+	Only state-changing methods are guarded. A GET that changes nothing is not worth the
+	compatibility risk, and none of ours do.
+*/
 func (s *Server) sameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -134,13 +141,15 @@ func (s *Server) originIsOurs(origin string, r *http.Request) bool {
 
 // ── rate limiting ───────────────────────────────────────────────────────────
 
-/* A token bucket per client address.
+/*
+A token bucket per client address.
 
-   The limit is deliberately loose. A person using the app hard — typing into live search,
-   paging a long list, opening the graph — makes a lot of requests in a short burst, and a
-   limit that interrupts real work would be worse than no limit at all. What this stops is
-   the other thing: a script hammering the station, whether that is someone probing it or
-   a device stuck in a retry loop taking the shop's inventory down with it. */
+	The limit is deliberately loose. A person using the app hard — typing into live search,
+	paging a long list, opening the graph — makes a lot of requests in a short burst, and a
+	limit that interrupts real work would be worse than no limit at all. What this stops is
+	the other thing: a script hammering the station, whether that is someone probing it or
+	a device stuck in a retry loop taking the shop's inventory down with it.
+*/
 const (
 	rateBurst   = 240             // requests available immediately
 	ratePerSec  = 40              // and how fast the bucket refills
@@ -233,4 +242,44 @@ func tokenOK(want, got string) bool {
 func isLocal(r *http.Request) bool {
 	ip := net.ParseIP(clientIP(r))
 	return ip != nil && ip.IsLoopback()
+}
+
+/*
+── the station must not become a way in ───────────────────────────────────
+
+	This app is meant to be reachable by the shop's own tablets and by nothing else. The
+	realistic way that goes wrong is not an attacker picking a lock: it is the station
+	ending up on the open internet by accident — a router with UPnP on, a port forward
+	somebody set up for something else years ago, a "cloud" VPS someone runs it on to try
+	it. In every one of those the inventory is suddenly answering strangers.
+
+	So the address a request came FROM is checked, and anything that is not the local
+	network is refused before it reaches a handler. Nobody who is meant to be using this
+	is ever outside RFC1918.
+
+	-open-to-internet exists because refusing to run somewhere is worse than refusing by
+	default and being told how to override it. It is loud, on purpose.
+*/
+func isPrivateClient(r *http.Request) bool {
+	ip := net.ParseIP(clientIP(r))
+	if ip == nil {
+		// An address that will not parse is not one we can vouch for.
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+func (s *Server) privateOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.OpenToInternet || isPrivateClient(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Deliberately terse and deliberately logged: the shop wants to know this
+		// happened, and whoever is knocking gets nothing to work with.
+		slog.Warn("refused a request from outside the local network",
+			"from", clientIP(r), "path", r.URL.Path)
+		http.Error(w, "this station only serves its own local network", http.StatusForbidden)
+	})
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,18 +18,20 @@ func (s *Server) routeLegacy(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/import/legacy", s.importLegacy)
 }
 
-/* POST /api/import/legacy
+/*
+POST /api/import/legacy
 
-   Takes the export one of two ways, because the two old formats cannot both arrive the
-   same route:
+	Takes the export one of two ways, because the two old formats cannot both arrive the
+	same route:
 
-     {"content":"<the export JSON>"}   the browser read the file, which it can do for
-                                       the .json the old download button produced
-     {"path":"C:/.../invos.db"}        a file on the machine running the server, which
-                                       is the only way to reach an old sql.js .db —
-                                       a browser cannot open a SQLite file
+	  {"content":"<the export JSON>"}   the browser read the file, which it can do for
+	                                    the .json the old download button produced
+	  {"path":"C:/.../invos.db"}        a file on the machine running the server, which
+	                                    is the only way to reach an old sql.js .db —
+	                                    a browser cannot open a SQLite file
 
-   `dry` reports what WOULD happen without writing, so a shop can look before it leaps. */
+	`dry` reports what WOULD happen without writing, so a shop can look before it leaps.
+*/
 func (s *Server) importLegacy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
@@ -44,6 +47,18 @@ func (s *Server) importLegacy(w http.ResponseWriter, r *http.Request) {
 
 	raw := []byte(body.Content)
 	if body.Path != "" {
+		/* Reading a file BY PATH is a console operation, and only a console operation.
+		   Accepting it from the network would hand any device that can reach this station
+		   the ability to open any file the station's user can read — a probe for what
+		   exists, and an import of whatever happened to parse. A tablet has no business
+		   naming paths on someone else's machine; it sends `content`, having opened the
+		   file itself with a file picker. */
+		if !isLocal(r) {
+			writeErr(w, http.StatusForbidden, errors.New(
+				"importing by file path only works at the station itself — "+
+					"from another device, pick the file so the browser sends its contents"))
+			return
+		}
 		var err error
 		if raw, err = readLegacyFile(body.Path); err != nil {
 			writeErr(w, http.StatusBadRequest, err)

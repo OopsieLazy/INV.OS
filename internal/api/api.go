@@ -27,6 +27,11 @@ type Server struct {
 	// system and is deliberately not one.
 	Token string
 
+	// OpenToInternet drops the local-network requirement. Off by default: a shop
+	// inventory has no business answering the open internet, and the usual way that
+	// happens is an accident nobody noticed.
+	OpenToInternet bool
+
 	// lim is the per-client rate limiter, created on first use by rateLimit.
 	lim *limiter
 	// LAN, when set, lets the app open and close shop-wide access while running.
@@ -85,7 +90,9 @@ func (s *Server) Handler() http.Handler {
 	/* Order matters. Rate limiting is outermost so a flood is dropped before it costs
 	   anything; then the same-origin check, then the token, then the app. Security
 	   headers wrap the lot so even a refusal carries them. */
-	return s.secure(s.logging(s.rateLimit(s.sameOrigin(s.auth(s.operator(mux))))))
+	/* privateOnly is outermost: a request from off the local network is refused before it
+	   costs anything at all, including a rate-limiter slot. */
+	return s.privateOnly(s.secure(s.logging(s.rateLimit(s.sameOrigin(s.auth(s.operator(mux)))))))
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────

@@ -596,7 +596,7 @@ const DB = {
   photoURL(cid){ return `/api/items/${cid}/photo`; },
   exportAll(){ return this.get("/api/export"); },
   serverInfo(){ return this.get("/api/server"); },
-  setLan(on){ return this.post("/api/lan", {on}); },
+  setLan(on, tls){ return this.post("/api/lan", tls===undefined ? {on} : {on, tls}); },
 
   viewComplete: true,   // does state.items currently hold every matching row?
 };
@@ -2562,6 +2562,34 @@ async function exec(line){
 
     case "lan": case "shop": {
       const want=rest.trim().toLowerCase();
+
+      /* `lan http` / `lan https` — encryption stays the default and stays recommended.
+         The reason to be able to turn it off is that the certificate is self-signed: a
+         browser can be told to accept it once, but a label printer, an ESP32 on the
+         bench, a curl script or a home-automation box polling for low stock often
+         cannot. Refusing those encryption-or-nothing does not make the shop safer, it
+         makes the shop keep a second, worse copy of the data somewhere else. */
+      if (want==="http" || want==="https" || want==="tls on" || want==="tls off"){
+        const secure = (want==="https" || want==="tls on");
+        let r2;
+        try { r2 = await DB.setLan(true, secure); }
+        catch(e){ print("could not change it: "+e.message,"a"); return; }
+        await refreshServerInfo(); updateBadge();
+        if (secure){
+          print("shop access is encrypted (https).","g");
+          print("  each device warns once about the certificate, then it is trusted.","d");
+        } else {
+          print("shop access is now PLAIN HTTP.","a");
+          print("  anything on this network can read what crosses it — quantities, part","d");
+          print("  numbers, and your shop key if one is set. Use it for devices that","d");
+          print("  cannot be taught a self-signed certificate, not for tablets.","d");
+          print("  back to encrypted:  lan https","d");
+        }
+        (r2.urls||[]).forEach(u=>print("  "+u,"g"));
+        print("  devices already connected must reload — the listener was rebuilt.","d");
+        return;
+      }
+
       if (want!=="on" && want!=="off"){
         // no argument: show the same screen the `server` command does
         await run("server"); return;
@@ -2574,7 +2602,8 @@ async function exec(line){
       print("shop access ON","g");
       (res.urls||[]).forEach(u=>print("  "+u,"g"));
       print("  devices on this network can open those and share this inventory. 'server' shows a QR code.","d");
-      if (res.unprotected) print("  no token set — anyone on the network can edit. restart with -token to require one.","a");
+      if (res.secure===false) print("  PLAIN HTTP — not encrypted. 'lan https' turns it back on.","a");
+      if (res.unprotected) print("  no key set — anyone on the network can edit. restart with -token to require one.","a");
       return;
     }
 
@@ -2589,7 +2618,9 @@ async function exec(line){
       print("");
       print("  version  "+info.version,"d");
       print("  shop access  "+(info.lan?"ON":"off"), info.lan?"g":"d");
-      print("  auth         "+(info.tokenSet?"token required (X-INVOS-Token)":"none"), info.tokenSet?"g":"d");
+      print("  auth         "+(info.tokenSet?"key required on other devices":"none"), info.tokenSet?"g":"d");
+      if (info.lan) print("  encryption   "+(info.secure===false?"OFF — plain http":"on — https"),
+                          info.secure===false?"a":"g");
       print("");
       if (info.lan){
         const shopUrls=(info.urls||[]).filter(u=>!/localhost|127\.0\.0\.1/.test(u));

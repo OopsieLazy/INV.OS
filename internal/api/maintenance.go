@@ -339,6 +339,8 @@ type ServerInfo struct {
 	// anyone interacting with it OVER A NETWORK be offered the source — and a tablet on
 	// the shop wifi is exactly that. A note on a website they may never see is not an
 	// offer; a line in the app they are using is.
+	// Secure says whether shop access is encrypted, so the app can warn when it is not.
+	Secure  bool   `json:"secure"`
 	License string `json:"license"`
 	Source  string `json:"source"`
 }
@@ -367,6 +369,7 @@ func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 	// from the app now.
 	if s.LAN != nil {
 		info.LAN = s.LAN.Enabled()
+		info.Secure = s.LAN.Secure()
 		info.URLs = append([]string{fmt.Sprintf("http://localhost:%d", info.Port)}, s.LAN.URLs()...)
 		info.CanToggleLAN = true
 	}

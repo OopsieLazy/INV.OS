@@ -136,6 +136,53 @@ check('the refused writes never reached the database', stats.items === 1, `${sta
 check('a cross-site GET is still allowed (it changes nothing)',
   (await fetch(BASE + '/api/stats', { headers: { ...auth, 'Sec-Fetch-Site': 'cross-site' } })).ok);
 
+// ── the station must not become a way in ────────────────────────────────────
+/* The realistic failure is not somebody picking a lock: it is the station ending up on
+   the open internet by accident — UPnP, an old port forward, a VPS somebody tried it on.
+   A public source address is refused before it reaches a handler. */
+const publicSrc = await fetch(BASE + '/api/stats', {
+  headers: { ...auth, 'X-Forwarded-For': '8.8.8.8' },
+});
+check('a spoofed X-Forwarded-For does not bypass anything (it is not trusted)',
+  publicSrc.ok, `status ${publicSrc.status}`);
+
+// Reading a file BY PATH is a console operation. Accepting it from the network would
+// hand any device that can reach the station the ability to open any file its user can.
+const remoteFileRead = await fetch(BASE + '/api/import/legacy', {
+  method: 'POST',
+  headers: { ...json, 'Sec-Fetch-Site': 'same-origin' },
+  body: JSON.stringify({ path: 'C:/Windows/win.ini', dry: true }),
+});
+check('importing by path still works at the station itself',
+  remoteFileRead.status !== 403, `status ${remoteFileRead.status}`);
+
+// ── encryption can be switched, and says so ─────────────────────────────────
+/* Encryption is the default and stays recommended. It can be turned off because the
+   certificate is self-signed and plenty of things that are not browsers — a label
+   printer, an ESP32, a curl script — cannot be taught to accept one. */
+const toLan = async tls => await (await fetch(BASE + '/api/lan', {
+  method: 'POST', headers: { ...json, 'Sec-Fetch-Site': 'same-origin' },
+  body: JSON.stringify({ on: true, tls }),
+})).json();
+
+const plain = await toLan(false);
+check('shop access can be switched to plain http at runtime',
+  plain.secure === false && (plain.urls || []).some(u => u.startsWith('http://')),
+  JSON.stringify(plain.urls));
+const secured = await toLan(true);
+check('and switched back to https, without a restart',
+  secured.secure === true && (secured.urls || []).every(u => u.startsWith('https://')),
+  JSON.stringify(secured.urls));
+
+// `lan on` on its own must not silently drop encryption — that is why the field is a
+// pointer on the wire rather than a plain bool.
+const justOn = await (await fetch(BASE + '/api/lan', {
+  method: 'POST', headers: { ...json, 'Sec-Fetch-Site': 'same-origin' },
+  body: JSON.stringify({ on: true }),
+})).json();
+check('turning shop access on does not quietly disable encryption',
+  justOn.secure === true, JSON.stringify(justOn));
+
 // ── flooding ────────────────────────────────────────────────────────────────
 // Not just malice: a device stuck in a retry loop can take a shop's station down.
 const burst = await Promise.all(

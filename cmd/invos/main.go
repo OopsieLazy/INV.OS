@@ -64,6 +64,8 @@ func run() error {
 		verbose = flag.Bool("v", false, "verbose request logging")
 		showVer = flag.Bool("version", false, "print version and exit")
 		useTLS  = flag.Bool("tls", true, "encrypt shop access with a self-signed certificate (localhost stays plain http)")
+		openNet = flag.Bool("open-to-internet", false,
+			"answer requests from outside the local network (OFF by default, and it should stay off)")
 	)
 	flag.Parse()
 
@@ -91,6 +93,14 @@ func run() error {
 
 	srv := api.New(st, web.Handler())
 	srv.Token = *token
+	/* A shop inventory has no business answering the open internet, and the usual way
+	   that happens is nobody deciding it should — a router with UPnP on, or a port
+	   forward set up years ago for something else. Refused by default; the flag exists so
+	   somebody who genuinely means it is not stuck. */
+	srv.OpenToInternet = *openNet
+	if *openNet {
+		slog.Warn("-open-to-internet is set: this station will answer requests from ANY address")
+	}
 
 	// The app's `server` screen shows where this station is reachable, so the info
 	// the flags decided is handed to the API layer rather than guessed at there.
@@ -149,10 +159,11 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("could not load the shop certificate: %w", err)
 		}
-		shop.tlsCfg = &tls.Config{
+		shop.baseTLS = &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
 		}
+		shop.tlsCfg = shop.baseTLS
 	}
 	if *lan {
 		if err := shop.Enable(); err != nil {

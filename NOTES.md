@@ -2970,3 +2970,56 @@ Nothing executed and nothing became an element. Findings:
 
 Verified: 11 injection checks, 22 security (5 now covering the key from a real remote
 address), 138 UI, 24 demo, 53 settings, 31 store.
+
+## v26.3 — not an access point, and encryption you can switch off on purpose
+
+Brief: no login, ever — just make sure the app is not a way into the network. Three things
+came out of that.
+
+### An arbitrary file read, closed
+
+`POST /api/import/legacy {"path": ...}` read any file the station's user could read, for
+any caller that could reach it. It was written for the console — the manual literally says
+"a file on the machine running the server" — but nothing enforced that, so a tablet, or
+anything else on the shop wifi, could probe for what exists and import whatever parsed.
+
+Reading a file BY PATH is now loopback-only. Another device still imports by picking the
+file, so the browser sends the contents; it just cannot name paths on somebody else's
+machine.
+
+### The station will not answer the internet
+
+The realistic way a shop tool becomes an access point is not a lock being picked. It is
+UPnP, or a port forward set up years ago for something else, or somebody trying it on a
+VPS. So the source address is checked and anything outside the local network is refused
+before it reaches a handler — outermost in the chain, ahead of even the rate limiter.
+
+`-open-to-internet` exists because refusing to run somewhere is worse than refusing by
+default and saying how to override. It logs a warning at startup when set.
+
+Proxy headers stay untrusted. `X-Forwarded-For` here is a value the caller chose for
+itself, so honouring it would turn this guard into a formality.
+
+### `lan http` / `lan https`
+
+Encryption remains the default and remains what tablets should use. But the certificate is
+self-signed, and while a browser can be told to accept it once, a label printer, an ESP32,
+a curl script or a home-automation box polling for low stock often cannot be told anything
+of the sort. Encryption-or-nothing does not make a shop safer — it makes the shop keep a
+second, worse copy of the data somewhere those devices CAN reach.
+
+So it switches at runtime, both ways, without a restart. The listener is rebuilt, because
+TLS is decided when the socket is wrapped rather than per request, and anything connected
+is dropped — which is the honest behaviour: a tablet holding an https connection cannot be
+quietly moved to http.
+
+Two details worth keeping:
+
+- the advertised URLs follow the scheme, so `server` never prints an address that will not
+  answer;
+- `tls` is a POINTER on the wire. A plain bool would have meant every `lan on` silently
+  turned encryption off, and there is a test for exactly that.
+
+Turning it off says what it costs, in the terminal, every time.
+
+Verified: 27 security checks (7 new), 11 injection, 138 UI, 24 demo, 53 settings, 31 store.

@@ -32,6 +32,9 @@ type lanSwitch struct {
 	// touches a wire, and a certificate warning on the station's own screen every
 	// morning would teach the shop to click through certificate warnings.
 	tlsCfg *tls.Config
+	// baseTLS is the certificate this station loaded at startup, kept so encryption can
+	// be switched back ON after being switched off without restarting.
+	baseTLS *tls.Config
 }
 
 func newLANSwitch(port int, handler http.Handler) *lanSwitch {
@@ -99,6 +102,50 @@ func (l *lanSwitch) Disable() error {
 
 // URLs lists what a phone or tablet on the same network should open. Empty when shop
 // access is off, because there is nothing to type in.
+// Secure reports whether shop access is currently encrypted.
+func (l *lanSwitch) Secure() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tlsCfg != nil
+}
+
+/*
+SetSecure switches shop access between https and plain http while running.
+
+	The listener has to be rebuilt, because TLS is decided when the socket is wrapped and
+	not per request. Anything currently connected is dropped — which is the honest
+	behaviour: a tablet holding an https connection cannot be quietly moved to http, and
+	pretending otherwise would leave it talking to a socket that no longer speaks its
+	language. Reloading the page is all it takes.
+*/
+func (l *lanSwitch) SetSecure(on bool) error {
+	l.mu.Lock()
+	want := l.tlsCfg != nil
+	if on == want {
+		l.mu.Unlock()
+		return nil
+	}
+	if on && l.baseTLS == nil {
+		l.mu.Unlock()
+		return fmt.Errorf("this station has no certificate — restart without -tls=false")
+	}
+	wasOn := l.srv != nil
+	if on {
+		l.tlsCfg = l.baseTLS
+	} else {
+		l.tlsCfg = nil
+	}
+	l.mu.Unlock()
+
+	if !wasOn {
+		return nil // nothing is listening; the next Enable picks up the new setting
+	}
+	if err := l.Disable(); err != nil {
+		return err
+	}
+	return l.Enable()
+}
+
 func (l *lanSwitch) URLs() []string {
 	if !l.Enabled() {
 		return nil

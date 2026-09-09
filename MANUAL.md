@@ -23,6 +23,7 @@ invos.exe -db shop.db -port 9000 -token secret -open=false
 | `-lan` | listen on the whole network, not just this machine — prints the URLs to type |
 | `-token <s>` | require this token on API calls; for a LAN you do not fully trust |
 | `-tls=false` | turn off encryption for shop access (it is **on** by default) |
+| `-open-to-internet` | answer requests from outside your local network — **leave this off** |
 | `-open=false` | do not open a window on start (for a shop box that boots headless) |
 | `-window=false` | open as a normal browser tab instead of an app window |
 | `-version` | print the version and exit |
@@ -196,6 +197,24 @@ self-signed: **each device warns once**, someone taps through, and after that th
 is genuinely encrypted. Without it, every quantity, part number and token crosses the air
 in plain text where anything already on that network can read it. `-tls=false` opts out.
 
+### Devices that cannot handle a certificate
+
+The certificate is self-signed, so a browser can be told to accept it once. A label
+printer, an ESP32 on the bench, a `curl` script or a home-automation box polling for low
+stock often cannot be told anything of the sort.
+
+```
+lan http      # shop access over plain http, for those
+lan https     # back to encrypted (the default)
+```
+
+Switched while the station is running; devices already connected reload once.
+
+**Use it for the things that need it, not for tablets.** On plain http, anything on that
+network can read what crosses it — quantities, part numbers, and your shop key if one is
+set. A browser can accept a certificate; a printer that never will is a reason to make an
+exception, not a reason to drop encryption for the whole shop.
+
 ### Locking it to people you trust
 
 For a network you do not fully trust, start the station with a key:
@@ -243,6 +262,8 @@ protection that is off.
 | **The page cannot be framed** | So it cannot be hidden under a decoy page and clicked through. |
 | **A strict content policy** | No CDN, no external font, no analytics, no `eval` — and nothing loaded in the page can send data anywhere but back here. |
 | **Flood protection** | A burst of hundreds of requests a second is refused and then forgiven. Normal heavy use — live search, paging, the graph — is unaffected. |
+| **It answers your network only** | A request from outside the local network is refused before it reaches anything. If this machine ever ends up port-forwarded or on a public address, the inventory does not answer strangers. |
+| **File paths are a console thing** | Importing a file by naming its path works at the station, never from another device — otherwise anything on the network could ask it to open any file its user can read. |
 | **Nothing is cached that shouldn't be** | The interface always revalidates, so a fixed build is never hidden behind a stale page. |
 
 ### About the certificate
