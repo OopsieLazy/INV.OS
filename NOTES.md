@@ -3023,3 +3023,46 @@ Two details worth keeping:
 Turning it off says what it costs, in the terminal, every time.
 
 Verified: 27 security checks (7 new), 11 injection, 138 UI, 24 demo, 53 settings, 31 store.
+
+## v26.4 — the graph stopped zooming out on its own
+
+Reported: opening the 3D graph runs for a few seconds and then zooms way out, as if
+something re-triggered it.
+
+Measured before touching anything, and the trace was unambiguous:
+
+```
+  t(ms)   scale   extent  nodes   alpha
+   8569     1.8      526   3111  0.0154
+   8774   0.766      526   3111  0.0150   <-- CAMERA MOVED
+```
+
+The camera sat on the launch zoom for **eight and a half seconds**, then jumped **2.3x
+wider in a single frame** the instant alpha crossed the settle threshold. The content
+extent was 526 the whole time — nothing about the scene justified the jump, which is
+exactly why it felt arbitrary.
+
+It was `gFitView()` firing once at the end of settling. The comment above it explained the
+reasoning — fit at the END, because the cloud grows while it settles, so framing it early
+would frame the wrong thing. Sound reasoning, wrong conclusion: it produced a long stretch
+of visibly wrong framing followed by a snap.
+
+The framing now FOLLOWS the layout the whole way down, easing toward the fit every frame
+while the camera is still the app's to choose. Never badly wrong, and no step at the end.
+
+Two details that took a measurement each:
+
+- **It is framed in elapsed time, not frames**, so it eases the same on any refresh rate
+  and a dropped frame does not leave the camera behind.
+- **The ease is deliberately slack.** A tight follow copies the layout's own overshoot —
+  the cloud expands past where it settles and comes back — and the camera wobbled 0.63
+  to 0.77 along with it. Slowing it lets the ease lag that overshoot and smooth it out.
+  Measured after: a monotonic pull-back, settled by about two seconds.
+
+The audit now samples the camera for eleven seconds and fails on any jump over 15% after
+the two-and-a-half second mark, plus asserts the framing is finished by then rather than
+still to come.
+
+Frame timing is unchanged: p50 13.3ms, zero stutters.
+
+55 settings checks (2 new), 138 UI, 24 demo, 27 security, 11 injection, 31 store.

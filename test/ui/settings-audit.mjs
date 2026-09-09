@@ -401,6 +401,44 @@ check('the drift rate is the same whichever axis it was left on',
 
 await run('cfgreset');
 
+// ── the camera must not lurch on its own ────────────────────────────────────
+/* Opening the 3D graph used to sit on the launch zoom for eight and a half seconds and
+   then jump 2.3x wider in one frame, the instant the physics wound down. Nothing about
+   the scene justified it — the content extent never changed — so it read as the graph
+   randomly zooming out. The framing now follows the layout the whole way down. */
+await run('graph off');
+await run('cfgreset');
+await run('graph inv');
+await run('graph 3d');
+
+const camera = await page.evaluate(async () => {
+  const out = [];
+  const t0 = performance.now();
+  for (let i = 0; i < 55; i++) {
+    out.push({ t: performance.now() - t0, s: gScale });
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return out;
+});
+
+// A jump AFTER the first couple of seconds is the bug: by then the layout is settling and
+// the camera should already be where it is staying.
+let worstLate = 0, worstAt = 0;
+for (let i = 1; i < camera.length; i++) {
+  if (camera[i].t < 2500) continue;
+  const rel = Math.abs(camera[i].s - camera[i - 1].s) / (camera[i - 1].s || 1);
+  if (rel > worstLate) { worstLate = rel; worstAt = Math.round(camera[i].t); }
+}
+check('the camera does not lurch once the graph has settled',
+  worstLate < 0.15, `${(worstLate * 100).toFixed(0)}% jump at ${worstAt}ms`);
+
+// And it should have finished framing early, not held the wrong zoom for eight seconds.
+const early = camera.find(x => x.t >= 2500).s;
+const end = camera[camera.length - 1].s;
+check('it settles on its framing within a couple of seconds',
+  Math.abs(end - early) / (early || 1) < 0.2,
+  `scale ${early.toFixed(3)} at 2.5s vs ${end.toFixed(3)} at the end`);
+
 // ── zooming while the graph is still filling in ──────────────────────────────
 /* The inventory is fetched AFTER the graph opens, and the layout is re-heated when it
    lands — so the content grows in the first seconds. The auto-fit normally absorbs that,

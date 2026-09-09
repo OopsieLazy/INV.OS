@@ -4647,12 +4647,19 @@ function gTick(){
   }
   if (a>0.015){
     gPhysics(a);
-    // The cloud grows while it settles, so fit at the END of settling rather than the
-    // start — once, and only while the view is still the app's to choose.
-    if (gAlpha<=0.015) {
-      if (!gUserAdjusted) gFitView();
-      else keepZoomRelative();      // they chose a zoom; hold it against the new size
+    /* Framing follows the layout the whole time it is settling, rather than being
+       corrected in one jump at the end. See gEaseToFit — the end-only version sat on the
+       wrong zoom for eight seconds and then snapped. */
+    if (!gUserAdjusted){
+      const now = performance.now();
+      const dt = gFitT ? now - gFitT : 16.7;
+      gFitT = now;
+      gEaseToFit(dt);
+    } else if (gAlpha<=0.015){
+      keepZoomRelative();           // they chose a zoom; hold it against the new size
     }
+  } else {
+    gFitT = 0;                      // settled: start the clock fresh next time
   }
   const idle = gIdle();
   gSpinMaybeResume();
@@ -5146,6 +5153,36 @@ function gFitView(){
   gScale = gFitScale(); gOX = 0; gOY = 0;
 }
 
+/* Follow the fit while the layout is still settling, instead of correcting it once at
+   the end.
+
+   Fitting only at the end was meant to avoid framing a cloud that was still growing. What
+   it actually produced: the graph opened at the configured launch zoom, sat there for
+   EIGHT AND A HALF SECONDS while the physics wound down, and then jumped 2.3x wider in a
+   single frame the moment alpha crossed the threshold. Measured, not guessed — the
+   content extent never changed at all, so nothing about the scene justified the jump. It
+   read as "it randomly zoomed out", because that is what it was.
+
+   Easing toward the fit every frame is both smoother and more correct: the framing is
+   never badly wrong for long, and it arrives with no step. The moment somebody touches
+   the camera this stops entirely — gUserAdjusted is checked by the caller. */
+function gEaseToFit(dt){
+  const want = gFitScale();
+  if (!(want > 0)) return;
+  // Framed in elapsed time, not frames, so it eases the same on any refresh rate — and
+  // so a dropped frame does not leave the camera behind.
+  /* Deliberately slack. A tight follow tracks the layout's own overshoot — the cloud
+     expands past where it settles and comes back — and the camera copies the wobble.
+     At this rate the ease lags that overshoot enough to smooth it out, and still lands
+     inside about a second and a half. */
+  const k = 1 - Math.pow(0.02, Math.min(50, dt)/1000);
+  gScale += (want - gScale)*k;
+  gOX += (0 - gOX)*k;
+  gOY += (0 - gOY)*k;
+  // Land exactly, rather than approaching forever a hair away from correct.
+  if (Math.abs(want - gScale) < want*0.002){ gScale = want; gOX = 0; gOY = 0; }
+}
+
 // Set as soon as the person zooms or pans, so the auto-fit stops overriding them.
 let gUserAdjusted = false;
 
@@ -5160,6 +5197,7 @@ let gUserAdjusted = false;
    smaller. Storing the zoom against the fit means "twice as close as fits" stays twice
    as close as fits when the layout changes size. */
 let gZoomRel = 0;
+let gFitT = 0;      // timestamp for the fit ease; see gEaseToFit
 
 function noteUserZoom(){
   gUserAdjusted = true;

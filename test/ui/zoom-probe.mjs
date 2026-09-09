@@ -88,6 +88,33 @@ await page.type('#cmd', 'graph 3d', { delay: 1 });
 await page.press('#cmd', 'Enter');
 await page.waitForTimeout(ZOOM_AT);
 
+// WATCH=1: no wheel at all — just record what the camera does on its own after the
+// graph opens. The complaint is a late zoom-OUT with nobody touching anything.
+if (process.env.WATCH) {
+  const trace = await page.evaluate(async () => {
+    const ex = () => { let m = 0; for (const n of gNodes) m = Math.max(m, Math.hypot(n.x, n.y, n.z || 0)); return m; };
+    const out = [];
+    for (let i = 0; i < 60; i++) {
+      out.push({ t: Math.round(performance.now()), s: +gScale.toFixed(3), e: +ex().toFixed(0),
+                 n: gNodes.length, a: +gAlpha.toFixed(4), adj: gUserAdjusted });
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return out;
+  });
+  console.log('\n  t(ms)   scale   extent  nodes   alpha   what');
+  let prev = null;
+  for (const x of trace) {
+    const note = prev && Math.abs(x.s - prev.s) > 0.01 ? '  <-- CAMERA MOVED' :
+                 prev && x.n !== prev.n ? '  <-- nodes arrived' : '';
+    console.log(`  ${String(x.t - Math.round(t0)).padStart(6)}  ${String(x.s).padStart(6)}  ` +
+      `${String(x.e).padStart(6)}  ${String(x.n).padStart(5)}  ${String(x.a).padStart(6)}${note}`);
+    prev = x;
+  }
+  await browser.close(); server.kill();
+  await new Promise(r => server.on('exit', r));
+  process.exit(0);
+}
+
 const box = await page.locator('#gcanvas').boundingBox();
 await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
 for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -120);   // zoom IN
