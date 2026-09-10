@@ -3470,3 +3470,26 @@ The audit measures TRAVEL now rather than asserting non-zero. A tenth of a radia
 non-zero and looks like nothing, which is how three useless styles passed their tests.
 
 61 settings checks, 138 UI, 35 layout, 24 demo.
+
+## v27.5 — bring your own certificate
+
+The MagicDNS gap had a proper fix, and it is better than accepting warnings: Tailscale
+will issue a publicly trusted certificate for a machine's tailnet name, free. So the
+station can now be pointed at a certificate somebody else issued.
+
+- `-cert` / `-key` — use a supplied certificate instead of generating one. Covers the
+  Tailscale case, a reverse proxy, and any shop that already has its own.
+- `-hostnames a,b` — extra names in the SELF-signed certificate, for when a real one is
+  more trouble than it is worth. Verified: the name lands in the SANs alongside the
+  addresses the station worked out for itself.
+- giving one of `-cert`/`-key` without the other is refused, rather than silently
+  falling back to self-signed and looking like it worked.
+
+The banner says which of the two it is running, because "tls on" meant two quite different
+things and only one of them warns.
+
+REMOTE.md now carries the Linux install end to end — Tailscale, key expiry (the box drops
+off the tailnet in six months without it, and you find out on the day you need it), the
+certificate, the systemd unit, and a cron line for the 90-day renewal.
+
+138 UI, 33 security, 61 settings, 24 demo.

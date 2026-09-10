@@ -70,21 +70,79 @@ just toggle the VPN.** No password, no IP to remember.
 Turn on **MagicDNS** and the box gets a name. `https://shop-pc:8137` from anywhere,
 instead of remembering `100.x.y.z`.
 
-One wrinkle worth knowing: the station's certificate covers its addresses, including the
-tailnet one, but it cannot know your MagicDNS name — so browsing by NAME gives a
-certificate warning even though browsing by ADDRESS does not. Accept it once per device,
-same as on the shop wifi, or use the address if that bothers you.
+The station's own certificate covers its addresses, including the tailnet one, but it
+cannot know your MagicDNS name — so browsing by NAME warns where browsing by ADDRESS does
+not. Three ways out, best first.
 
-If you would rather have neither warning: over a tailnet the traffic is already encrypted
-end to end by WireGuard, so `lan http` is a defensible choice there — you are not sending
-anything in the clear, you are letting the mesh do the encrypting. That does mean the shop
-wifi is unencrypted too, though, so it is a trade rather than a free win.
+**1. Get a real certificate. Free, and there is then no warning anywhere.**
 
-### If you want it easier to start
+Tailscale will issue a publicly trusted certificate for your machine's name. Turn on
+**HTTPS Certificates** in the admin console (Settings → DNS), then on the box:
 
-Tailscale can run as a service, so the box is on the network from boot. The kiosk
-installer already runs INV.OS as a systemd unit; add Tailscale's own service beside it and
-there is nothing to start by hand ever again.
+```bash
+sudo tailscale cert shop-pc.tail1234.ts.net      # your actual name; `tailscale status` shows it
+invos -lan -cert shop-pc.tail1234.ts.net.crt -key shop-pc.tail1234.ts.net.key
+```
+
+That is a genuine Let's Encrypt certificate. No warnings, on any device, ever. It renews
+every 90 days — re-run `tailscale cert` and restart INV.OS, or put both in a monthly cron
+job and forget about it.
+
+**2. Put the name in the self-signed certificate.** One warning per device instead of one
+per device per name:
+
+```bash
+invos -lan -hostnames shop-pc.tail1234.ts.net
+```
+
+**3. Accept the warning.** Which is what you said you would do, and it is fine — you are
+accepting a certificate the machine generated for itself, on a network only your devices
+can reach. It is the same trust decision either way; option 1 just makes the browser stop
+asking.
+
+### Installing it on a Linux shop box
+
+```bash
+# 1. Tailscale itself. Works on Debian, Ubuntu, Raspberry Pi OS, Arch, Fedora.
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# 2. Bring it up. This prints a URL — open it, sign in with GitHub or Google, done.
+#    --ssh is optional and lets you get a shell on this box from your laptop later.
+sudo tailscale up --ssh
+
+# 3. Check it, and note the name and address it prints.
+tailscale status
+tailscale ip -4                       # the 100.x.y.z address
+
+# 4. Stop it logging itself out. Do this in the admin console, once:
+#    Machines -> this box -> ... -> Disable key expiry
+#    Without it the box drops off the tailnet in about six months, and you find out
+#    on the day you need it.
+
+# 5. A real certificate, so nothing ever warns (optional but worth it):
+#    admin console -> Settings -> DNS -> enable HTTPS Certificates, then:
+sudo tailscale cert "$(tailscale status --json | grep -o '"DNSName":"[^"]*' | head -1 | cut -d'"' -f4 | sed 's/\.$//')"
+
+# 6. INV.OS itself
+./kiosk/install.sh                    # installs the binary + a systemd unit
+```
+
+`tailscale up` and the INV.OS unit both survive a reboot, so after this the box is on the
+tailnet and serving before anyone logs in. Nothing to start by hand, ever.
+
+To use the certificate from step 5, add it to the service — edit
+`~/.config/systemd/user/invos.service` so ExecStart carries
+`-cert <name>.crt -key <name>.key`, then:
+
+```bash
+systemctl --user daemon-reload && systemctl --user restart invos
+```
+
+**Renewal:** `tailscale cert` certificates last 90 days. A monthly cron line covers it:
+
+```
+0 4 1 * * tailscale cert <name> && systemctl --user restart invos
+```
 
 ---
 

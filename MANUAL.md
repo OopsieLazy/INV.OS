@@ -25,6 +25,8 @@ invos.exe -db shop.db -port 9000 -token secret -open=false
 | `-tls=false` | turn off encryption for shop access (it is **on** by default) |
 | `-open-to-internet` | answer requests from outside your local network — **leave this off** |
 | `-require-key` | make the key apply to localhost too — needed behind a tunnel or proxy |
+| `-cert` / `-key` | use a certificate you already have instead of the self-signed one |
+| `-hostnames a,b` | extra names to put in the self-signed certificate |
 | `-open=false` | do not open a window on start (for a shop box that boots headless) |
 | `-window=false` | open as a normal browser tab instead of an app window |
 | `-version` | print the version and exit |

@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,16 +56,20 @@ func main() {
 
 func run() error {
 	var (
-		dbPath  = flag.String("db", defaultDB(), "path to the SQLite database file")
-		port    = flag.Int("port", 8137, "port to listen on")
-		lan     = flag.Bool("lan", false, "listen on all interfaces so shop devices can connect")
-		token   = flag.String("token", os.Getenv("INVOS_TOKEN"), "require this token on API calls (LAN deployments)")
-		open    = flag.Bool("open", true, "open the app on start")
-		window  = flag.Bool("window", true, "open as a desktop app window (false = a normal browser tab)")
-		verbose = flag.Bool("v", false, "verbose request logging")
-		showVer = flag.Bool("version", false, "print version and exit")
-		useTLS  = flag.Bool("tls", true, "encrypt shop access with a self-signed certificate (localhost stays plain http)")
-		reqKey  = flag.Bool("require-key", false,
+		dbPath   = flag.String("db", defaultDB(), "path to the SQLite database file")
+		port     = flag.Int("port", 8137, "port to listen on")
+		lan      = flag.Bool("lan", false, "listen on all interfaces so shop devices can connect")
+		token    = flag.String("token", os.Getenv("INVOS_TOKEN"), "require this token on API calls (LAN deployments)")
+		open     = flag.Bool("open", true, "open the app on start")
+		window   = flag.Bool("window", true, "open as a desktop app window (false = a normal browser tab)")
+		verbose  = flag.Bool("v", false, "verbose request logging")
+		showVer  = flag.Bool("version", false, "print version and exit")
+		useTLS   = flag.Bool("tls", true, "encrypt shop access with a self-signed certificate (localhost stays plain http)")
+		certFile = flag.String("cert", "", "use this TLS certificate instead of the self-signed one (see -key)")
+		keyFile  = flag.String("key", "", "private key for -cert")
+		extraDNS = flag.String("hostnames", "",
+			"extra names to put in the self-signed certificate, comma separated (e.g. a MagicDNS name)")
+		reqKey = flag.Bool("require-key", false,
 			"require the key from every caller including localhost (use behind a tunnel or proxy)")
 		openNet = flag.Bool("open-to-internet", false,
 			"answer requests from outside the local network (OFF by default, and it should stay off)")
@@ -156,11 +161,34 @@ func run() error {
 	   its own and keeps it beside the database. Each device warns once; after someone
 	   accepts it, the connection is real encryption. -tls=false opts out. */
 	if *useTLS {
-		hosts := certHosts(lanIPs())
-		certPath, keyPath, err := ensureCert(filepath.Dir(*dbPath), hosts)
-		if err != nil {
-			return fmt.Errorf("could not prepare the shop certificate: %w", err)
+		var certPath, keyPath string
+
+		if (*certFile == "") != (*keyFile == "") {
+			return fmt.Errorf("-cert and -key go together: give both or neither")
 		}
+		if *certFile != "" {
+			/* A certificate somebody else issued. The reason this exists: `tailscale
+			   cert <machine>.<tailnet>.ts.net` will hand you a real, publicly trusted
+			   one for free, and pointing at it removes the warning everywhere instead
+			   of asking every device to click through it once. Also covers a reverse
+			   proxy, or any shop that already has its own. */
+			certPath, keyPath = *certFile, *keyFile
+		} else {
+			hosts := certHosts(lanIPs())
+			// Names the station cannot work out for itself — a MagicDNS name, or
+			// whatever a shop calls this box internally.
+			for _, h := range strings.Split(*extraDNS, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					hosts = append(hosts, h)
+				}
+			}
+			var err error
+			certPath, keyPath, err = ensureCert(filepath.Dir(*dbPath), hosts)
+			if err != nil {
+				return fmt.Errorf("could not prepare the shop certificate: %w", err)
+			}
+		}
+
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
 			return fmt.Errorf("could not load the shop certificate: %w", err)
@@ -178,7 +206,7 @@ func run() error {
 	}
 
 	local := fmt.Sprintf("http://localhost:%d", *port)
-	banner(*dbPath, local, shop.Enabled(), *port, *token != "", shop.tlsCfg != nil)
+	banner(*dbPath, local, shop.Enabled(), *port, *token != "", shop.tlsCfg != nil, *certFile != "")
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -215,7 +243,7 @@ func run() error {
 	return httpSrv.Shutdown(ctx)
 }
 
-func banner(db, local string, lan bool, port int, tokened, secure bool) {
+func banner(db, local string, lan bool, port int, tokened, secure, ownCert bool) {
 	fmt.Println("  INV.OS " + version)
 	fmt.Println("  database  " + db)
 	fmt.Println("  local     " + local)
@@ -237,7 +265,9 @@ func banner(db, local string, lan bool, port int, tokened, secure bool) {
 			}
 			fmt.Printf("  shop      %s://%s:%d%s\n", scheme, ip, port, note)
 		}
-		if secure {
+		if secure && ownCert {
+			fmt.Println("  tls       on — using the certificate you supplied")
+		} else if secure {
 			fmt.Println("  tls       on — self-signed, so each device warns once")
 		} else {
 			fmt.Println("  tls       OFF — inventory crosses this network in the clear")
