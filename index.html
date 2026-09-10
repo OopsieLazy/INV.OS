@@ -305,14 +305,29 @@
        The shop name goes — it is the one thing on the row that is not a control — and the
        buttons shrink until all of them fit across the width without scrolling. */
     #barl{ display:none }
-    #bar{
-      justify-content:space-between; padding:5px 8px; overflow:visible;
-      gap:4px;
-    }
-    #barr{ display:flex; flex:1; gap:4px; justify-content:flex-end; min-width:0 }
+    /* The buttons span the width rather than bunching in the corner. Each takes an
+       equal share, so the row reads as a nav bar and every target is as wide as it can
+       be — which on a phone is the whole point. */
+    #bar{ padding:5px 6px; overflow:visible; gap:0 }
+    #barr{ display:flex; flex:1; gap:5px; justify-content:stretch; min-width:0 }
     .warnpill,.barbtn{
-      height:30px; padding:0 8px; font-size:11px; letter-spacing:.02em;
-      flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+      height:32px; padding:0 4px; font-size:11px; letter-spacing:.01em;
+      flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+
+    /* ── while the keyboard is up ─────────────────────────────────────────────
+       The graph gets out of the way. With a keyboard taking half the screen and the
+       graph taking 42% of what is left, a search had nowhere to put its results — you
+       typed and could not see what you had found, which is the one thing that matters
+       while typing.
+
+       It collapses rather than bouncing: height and opacity are transitioned, so it
+       folds away and unfolds instead of snapping. Everything comes straight back when
+       the keyboard closes. */
+    #graphpane{ transition:height .18s ease, opacity .18s ease }
+    body.kbd.g-split #graphpane{
+      height:0; opacity:0; border-bottom:none; pointer-events:none;
     }
   }
 
@@ -4874,6 +4889,7 @@ function initKeyboardScroll(){
      default for a workaround. */
   const clearFit = () => {
     document.documentElement.style.removeProperty("--vh");
+    document.body.classList.remove("kbd");
     window.scrollTo(0, 0);
     if (typeof gWake === "function") gWake();
   };
@@ -4884,8 +4900,11 @@ function initKeyboardScroll(){
     const h = Math.max(vv.height, window.innerHeight * 0.45);
     if (h >= window.innerHeight - 4){ clearFit(); return; }   // no keyboard: leave it alone
     document.documentElement.style.setProperty("--vh", Math.round(h) + "px");
+    // Fold the graph away for the duration, so what you are typing has room to answer.
+    document.body.classList.add("kbd");
     window.scrollTo(0, 0);                                    // undo the caret chase
     if (typeof gWake === "function") gWake();
+    setTimeout(toBottom, 200);                                // after the fold finishes
   };
 
   if (window.visualViewport){
