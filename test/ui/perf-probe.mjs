@@ -228,13 +228,62 @@ for (const [label, opts] of [
     check(`${label}: double-tapping the terminal shows the top bar only`,
       afterTerm.bar && !afterTerm.gbtns, JSON.stringify(afterTerm));
 
-    await dbl('#gcanvas', { x: 60, y: 60 });
+    /* The graph takes a SINGLE tap, because the canvas already knows whether the gesture
+       moved — so a tap can be told from a rotate, which is what makes one tap safe there
+       and not in the terminal. */
+    await page.locator('#gcanvas').tap({ position: { x: 25, y: 25 } });
+    await page.waitForTimeout(300);
     const afterGraph = await page.evaluate(() => ({
       bar: !document.body.classList.contains('bar-hide'),
       gbtns: !document.body.classList.contains('gbtns-hide'),
     }));
-    check(`${label}: double-tapping the graph shows its buttons, independently`,
+    check(`${label}: one tap on the graph shows its buttons, independently`,
       afterGraph.gbtns && afterGraph.bar, JSON.stringify(afterGraph));
+
+    // A rotate must NOT be read as a tap.
+    const box2 = await page.locator('#gcanvas').boundingBox();
+    await page.touchscreen.tap(box2.x + 30, box2.y + 30);   // put them away first
+    await page.waitForTimeout(250);
+    const beforeDrag = await page.evaluate(() =>
+      document.body.classList.contains('gbtns-hide'));
+    await page.locator('#gcanvas').dragTo(page.locator('#gcanvas'), {
+      sourcePosition: { x: 40, y: 40 }, targetPosition: { x: 140, y: 90 },
+    });
+    await page.waitForTimeout(300);
+    const afterDrag = await page.evaluate(() =>
+      document.body.classList.contains('gbtns-hide'));
+    check(`${label}: dragging the graph does not toggle them`,
+      beforeDrag === afterDrag, `hidden ${beforeDrag} -> ${afterDrag}`);
+
+    // The buttons live down the side on a phone, not across the top.
+    const btnLayout = await page.evaluate(() => {
+      document.body.classList.remove('gbtns-hide');
+      const g = document.getElementById('gbtns');
+      const r = g.getBoundingClientRect();
+      return { dir: getComputedStyle(g).flexDirection, tall: r.height > r.width };
+    });
+    check(`${label}: the graph buttons stack down the side`,
+      btnLayout.dir === 'column' && btnLayout.tall, JSON.stringify(btnLayout));
+
+    // And the panes can be swapped.
+    const swapped = await page.evaluate(async () => {
+      const pane = document.getElementById('graphpane');
+      const before = pane.getBoundingClientRect().top;
+      setCfg('graphFirst', 1);
+      await new Promise(r => setTimeout(r, 400));
+      const after = pane.getBoundingClientRect().top;
+      setCfg('graphFirst', 0);
+      return { before, after };
+    });
+    check(`${label}: the graph can be moved above the terminal`,
+      swapped.after < swapped.before,
+      `graph top ${Math.round(swapped.before)} -> ${Math.round(swapped.after)}`);
+
+    // Terminal text scales down so a shelf tree fits instead of wrapping.
+    const fs = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.getElementById('term')).fontSize));
+    check(`${label}: the terminal text is scaled down to fit`,
+      fs >= 10 && fs <= 12.5, `${fs}px`);
 
     // The prompt has to stay reachable while you scroll back through a long listing.
     const sticky = await page.evaluate(async () => {

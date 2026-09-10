@@ -3204,3 +3204,50 @@ toggles, that each half toggles only its own furniture, and that the prompt stay
 screen while the output is scrolled back to the top.
 
 138 UI, 55 settings, 24 demo.
+
+## v26.8 — the typing gap, and the phone gets its own layout controls
+
+### The empty space when you start typing
+
+Reported: typing opens a big gap and you can no longer scroll back up to the sections.
+
+The keyboard does not shrink the page. The layout viewport keeps its full height and the
+keyboard simply covers the bottom of it — so a full-height flex column puts the prompt
+behind the keyboard, and the browser scrolls the whole DOCUMENT to chase the caret. That
+document scroll is the gap, and once the page itself has moved, the terminal's own
+scrollback is no longer where your thumb is.
+
+The app is sized to `visualViewport.height` now, which is the only thing that knows how
+much room is actually left, and any scroll the browser already did is undone. `margin-top:
+auto` on the prompt went too — that pushed it to the bottom of an empty terminal and left
+a gap ABOVE it, which was the same complaint from the other direction.
+
+### Text that fits
+
+The terminal scales with the screen — `clamp(10px, 2.95vw, 13px)`, which lands near 11px
+on a 390px phone, about 59 characters. That is what the shelf tree and the section
+listings need to stay on one line. The bars keep their own size: shrinking a button to fit
+text is how you end up with a control nobody can hit.
+
+### One tap, and buttons down the side
+
+The graph takes a SINGLE tap now. That is safe there and only there, because the canvas
+already tracks whether the gesture moved — so a tap can be told from a rotate or a pinch.
+The terminal keeps double-tap: its rows are dense and it has no such signal, so one tap
+would fire while somebody is trying to select a row.
+
+The buttons stack down the right edge instead of across the top. A phone is tall and
+narrow: a horizontal row of five eats the width the graph needs, a vertical one eats a
+strip of the height it has spare. They fade rather than vanish, because things that blink
+on tap feel broken, and pointer-events go with the opacity so a hidden strip cannot
+swallow a drag that starts near the edge.
+
+### `graph position`
+
+New setting, one meaning on each layout: the graph goes above the terminal on a phone and
+to its left on a desktop, or stays below/right. Applied in `setCfg` rather than
+`applyCfg` — setCfg is the one place every cfg write passes through, and a setting that
+only works when a particular caller remembers to ask is a setting that does not work. The
+test caught exactly that.
+
+21 layout checks, 138 UI, 56 settings, 24 demo.
