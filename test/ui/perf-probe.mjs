@@ -332,6 +332,27 @@ for (const [label, opts] of [
     check(`${label}: the graph comes back when the keyboard goes`,
       Math.abs(typing.back - typing.before.pane) < 4, JSON.stringify(typing));
 
+    /* `settings` is a page, not terminal output — on a phone it takes the whole display
+       rather than scrolling a long list through a half-height window. */
+    const settingsScreen = await page.evaluate(async () => {
+      const pane = document.getElementById('graphpane');
+      const term = document.getElementById('term');
+      await exec('settings');
+      await new Promise(r => setTimeout(r, 500));
+      const during = { pane: pane.getBoundingClientRect().height,
+                       term: term.getBoundingClientRect().height,
+                       marked: document.body.classList.contains('screen-full') };
+      await exec('graph inv');           // any other command hands the display back
+      await new Promise(r => setTimeout(r, 600));
+      return { during, after: pane.getBoundingClientRect().height,
+               cleared: !document.body.classList.contains('screen-full') };
+    });
+    check(`${label}: the settings screen takes the whole display`,
+      settingsScreen.during.marked && settingsScreen.during.pane < 2,
+      JSON.stringify(settingsScreen));
+    check(`${label}: and the next command gives the graph back`,
+      settingsScreen.cleared && settingsScreen.after > 40, JSON.stringify(settingsScreen));
+
     // Terminal text scales down so a shelf tree fits instead of wrapping.
     const fs = await page.evaluate(() =>
       parseFloat(getComputedStyle(document.getElementById('term')).fontSize));

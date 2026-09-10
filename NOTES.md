@@ -3330,3 +3330,25 @@ of the results, which are the thing that needed room. The graph is still one tap
 moment you are done typing.
 
 27 layout checks, 138 UI, 56 settings, 33 security, 24 demo.
+
+## v27.1 — catching up after the keyboard, and screens that take the screen
+
+### The terminal catches up
+
+Closing the keyboard left you looking at wherever the shorter layout had been scrolled to,
+which is usually just above the thing you typed — so the first move after every command
+was a scroll down to read your own result. It scrolls to the bottom once the graph has
+unfolded now.
+
+### Screens are pages
+
+`settings` is a page, not terminal output. On a phone it takes the whole display: sharing
+it with the graph meant scrolling a long list through a half-height window while the graph
+used the other half to show something nobody looks at while changing a setting.
+
+Cleared in `exec()` rather than in `run()`. run() is only the typed path — menu clicks,
+first-run doors and the tour all reach exec directly, so a reset that only fires for typed
+commands is not a reset. The test caught exactly that: it drove the app through `exec` and
+the graph never came back.
+
+29 layout checks, 138 UI, 56 settings, 33 security, 24 demo.

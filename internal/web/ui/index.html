@@ -316,6 +316,14 @@
       white-space:nowrap;
     }
 
+    /* A screen like `settings` is a page, not terminal output. On a phone it should have
+       the whole display: sharing it with the graph means scrolling a long list through a
+       half-height window, with the graph taking the other half to show something nobody
+       is looking at while they change a setting. */
+    body.screen-full.g-split #graphpane{
+      height:0; opacity:0; border-bottom:none; pointer-events:none;
+    }
+
     /* ── while the keyboard is up ─────────────────────────────────────────────
        The graph gets out of the way. With a keyboard taking half the screen and the
        graph taking 42% of what is left, a search had nowhere to put its results — you
@@ -1629,7 +1637,17 @@ function applyCfg(changedKey){
   if (graphMode!=="off") gAlpha=Math.max(gAlpha,0.05);
 }
 
+/* Screens that are a PAGE rather than terminal output take the whole phone display. Set
+   here and cleared by run(), so the next command — whatever it is — puts the graph back,
+   and a command that re-renders this screen simply sets it again. */
+function markFullScreen(){
+  if (typeof document === "undefined") return;
+  document.body.classList.add("screen-full");
+  if (typeof gWake === "function") gWake();
+}
+
 function renderSettings(focusKey){
+  markFullScreen();
   atHome=false; menuOpen=false;
   out.innerHTML=""; live.innerHTML=""; browseSel=-1;
   print("SETTINGS","w"); print("");
@@ -2545,6 +2563,11 @@ function projSnap(desc){
 /* ---------- commands ---------- */
 async function exec(line){
   browseSel=-1;
+  /* Any command hands the phone display back; a screen that wants it takes it again on
+     the way through. Cleared HERE rather than in run(), because run() is only the typed
+     path — menu clicks, first-run doors and the tour all reach exec directly, and a
+     setting that only resets for one of those is not reset at all. */
+  if (typeof document !== "undefined") document.body.classList.remove("screen-full");
   const t=line.trim(); if(!t) return;
   const [verb]=t.split(/\s+/);
   const rest=t.slice(verb.length).trim();
@@ -4031,6 +4054,12 @@ function initKeyboardScroll(){
     document.body.classList.remove("kbd");
     window.scrollTo(0, 0);
     if (typeof gWake === "function") gWake();
+    /* Catch up to the bottom once the graph has unfolded. Without this, closing the
+       keyboard left you looking at wherever the shorter layout had been scrolled to —
+       which is usually just above the thing you had typed, so the first move after every
+       command was a scroll down to read your own result. */
+    setTimeout(toBottom, 60);
+    setTimeout(toBottom, 260);
   };
 
   const fit = () => {

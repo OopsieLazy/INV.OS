@@ -89,6 +89,64 @@ rather than looking protected and not being.
 
 Belt and braces: Cloudflare Access in front, the key behind it.
 
+### So how exposed am I, really?
+
+Honest answer: **a tunnel with Access in front is genuinely solid, and the domain is not
+what makes it so.** Worth being precise about what you are buying, because "Cloudflare
+covers it" is true of some things and not others.
+
+**What Cloudflare does cover**
+
+- **No inbound ports.** `cloudflared` dials out. Your router has nothing open, so there is
+  nothing to scan and nothing to brute-force at the network level. This is the big one.
+- **A real certificate**, so no self-signed warnings and no one training themselves to
+  click through them.
+- **Authentication happens BEFORE your app.** With Access on, an unauthenticated request
+  never reaches the station at all. Your inventory is not what is fending off the
+  internet — Cloudflare is, and they are considerably better at it.
+- **DDoS and bot filtering**, free, at a scale you could not buy.
+- **A log of who logged in and when**, which INV.OS itself deliberately does not do.
+
+**What it does not cover, and what is therefore yours**
+
+- **Anyone who passes Access has full access.** There are no permissions in INV.OS — the
+  login decides whether, never what. Keep the Access policy to specific email addresses,
+  not "anyone with a Google account".
+- **A bypassed or misconfigured Access policy exposes everything.** The single most common
+  mistake is publishing the tunnel first and adding the policy afterwards. Do it the other
+  way round, and check it in a private window before you rely on it.
+- **The loopback exemption.** Covered above: without `-require-key`, everyone through the
+  tunnel arrives looking like the person at the machine. This is the one that would bite
+  you specifically, because it is invisible when it goes wrong — it just works, for
+  everybody.
+- **The box itself.** A tunnel makes one app reachable, not the machine. That is fine
+  until the machine is unpatched and something else on it is also listening.
+- **Your own account.** The tunnel is only as good as the Cloudflare login that controls
+  it. Put 2FA on that one, not just on Access.
+
+**Compared to Tailscale:** a tunnel has a public front door with a good lock, where
+Tailscale has no door. Tailscale is strictly safer. A tunnel is more convenient, and the
+gap between them is small enough that "always up, works on anything, no client to install"
+is a fair reason to choose it — as long as `-require-key` is set and the Access policy
+names actual people.
+
+**The domain buys none of this.** It buys a name. The security comes from Access and from
+having no open ports, both of which are free.
+
+### A tunnel, start to finish
+
+```
+1. Buy a domain, point its nameservers at Cloudflare (their dashboard walks you through).
+2. Zero Trust -> Access -> Applications -> Add: self-hosted, inventory.yourdomain.com
+   Policy: Allow, emails -> list the actual addresses. Do this BEFORE step 4.
+3. On the shop box:  invos.exe -lan -token <something-long> -require-key
+4. cloudflared tunnel --url http://127.0.0.1:8137
+   (then `cloudflared service install` so it comes up on boot)
+5. Open it in a private window. You should get a login you cannot skip.
+```
+
+Step 2 before step 4 is the part people get wrong.
+
 ---
 
 ## 3. Port forwarding — no
