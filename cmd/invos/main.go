@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -263,7 +264,9 @@ func banner(db, local string, lan bool, port int, tokened, secure, ownCert bool)
 			if isMeshIP(ip) {
 				note = "   (works from anywhere on your tailnet)"
 			}
-			fmt.Printf("  shop      %s://%s:%d%s\n", scheme, ip, port, note)
+			// JoinHostPort, not "%s:%d": an IPv6 address needs brackets or the URL is
+			// unusable, and this list now carries them.
+			fmt.Printf("  shop      %s://%s%s\n", scheme, net.JoinHostPort(ip, strconv.Itoa(port)), note)
 		}
 		if secure && ownCert {
 			fmt.Println("  tls       on — using the certificate you supplied")
@@ -293,49 +296,72 @@ func lanURLs(lan bool, port int, secure bool) []string {
 	}
 	var out []string
 	for _, ip := range lanIPs() {
-		out = append(out, fmt.Sprintf("%s://%s:%d", scheme, ip, port))
+		out = append(out, scheme+"://"+net.JoinHostPort(ip, strconv.Itoa(port)))
 	}
 	return out
 }
 
-// isMeshIP reports whether an address is in 100.64.0.0/10 — RFC 6598 shared space, which
-// on a machine like this means a private mesh such as Tailscale rather than the shop LAN.
-// The distinction matters to a person: one address works from the bench, the other works
-// from a customer's car park, and nothing about the numbers says so.
+// tailscaleV6 is Tailscale's IPv6 range. A tailnet hands every machine both a 100.x
+// address and one of these, and MagicDNS publishes both, so a phone may well try the
+// IPv6 one first.
+var tailscaleV6 = &net.IPNet{IP: net.ParseIP("fd7a:115c:a1e0::"), Mask: net.CIDRMask(48, 128)}
+
+// isMeshIP reports whether an address belongs to a private mesh such as Tailscale —
+// 100.64.0.0/10 (RFC 6598 shared space) or Tailscale's own IPv6 range — rather than the
+// shop LAN. The distinction matters to a person: one address works from the bench, the
+// other works from a customer's car park, and nothing about the numbers says so.
 func isMeshIP(s string) bool {
-	ip := net.ParseIP(s).To4()
-	return ip != nil && ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
+	}
+	return tailscaleV6.Contains(ip)
 }
 
 // lanIPs lists this machine's addresses on the local network, so the banner can print
-// URLs a person can actually type into a tablet.
+// URLs a person can actually type into a tablet — and, since the shop listener binds
+// exactly this list, so the station never advertises an address it is not serving.
 func lanIPs() []string {
 	var out []string
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return out
 	}
-	// Prefer real private-network addresses. A machine typically also has link-local
-	// (169.254.x.x, from an adapter with no DHCP) and virtual-adapter addresses, and
-	// handing one of those to a tablet gives an address that will never answer.
-	var private4, other4 []string
+	/* Order is what a person reads first, so put the address most likely to be wanted at
+	   the top: real private-network v4, then v4 that is neither private nor loopback
+	   (a tailnet's 100.x lands here), then v6 last because nobody types one willingly.
+
+	   Excluded throughout: loopback, which belongs to the local listener in main();
+	   link-local, both the v4 kind (169.254.x.x, from an adapter with no DHCP) and the
+	   v6 kind (fe80::, which cannot even be dialled without naming its interface); and
+	   multicast, which is not an address anything listens on. */
+	var private4, other4, v6 []string
 	for _, a := range addrs {
 		ipNet, ok := a.(*net.IPNet)
-		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
+		if !ok {
 			continue
 		}
-		ip4 := ipNet.IP.To4()
-		if ip4 == nil {
+		ip := ipNet.IP
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 			continue
 		}
-		if ip4.IsPrivate() {
-			private4 = append(private4, ip4.String())
-		} else {
-			other4 = append(other4, ip4.String())
+		if ip4 := ip.To4(); ip4 != nil {
+			if ip4.IsPrivate() {
+				private4 = append(private4, ip4.String())
+			} else {
+				other4 = append(other4, ip4.String())
+			}
+			continue
 		}
+		v6 = append(v6, ip.String())
 	}
 	out = append(out, private4...)
 	out = append(out, other4...)
+	out = append(out, v6...)
 	return out
 }
 
