@@ -48,6 +48,38 @@ Cost: free for personal use, comfortably inside the limits for one shop.
 "local network only" guard used to refuse it — Tailscale would have been blocked by our
 own defence. It is treated as local now, and the public internet still is not.
 
+### Do I have to log in every time?
+
+**No — and this is the part that makes it worth doing.** You sign in once per device,
+ever. Neither machine asks again.
+
+- **The shop PC:** install it as a service and it connects on boot, before anyone logs
+  into Windows. You never touch it. **Turn off key expiry for that machine** in the
+  Tailscale admin (Machines → the box → Disable key expiry), or it will log itself out
+  after about six months and the first you hear of it is the day you need it.
+- **Your iPhone:** the app stays signed in. Tailscale appears as a VPN profile; leave it
+  on, or flick it on when you want the shop. There is no login either way — the switch is
+  just a switch. Idle battery cost is negligible; it is only moving data when you are
+  using it.
+
+So the answer to your question is: **the PC is always on the tailnet, and on the phone you
+just toggle the VPN.** No password, no IP to remember.
+
+### And you do not type an IP
+
+Turn on **MagicDNS** and the box gets a name. `https://shop-pc:8137` from anywhere,
+instead of remembering `100.x.y.z`.
+
+One wrinkle worth knowing: the station's certificate covers its addresses, including the
+tailnet one, but it cannot know your MagicDNS name — so browsing by NAME gives a
+certificate warning even though browsing by ADDRESS does not. Accept it once per device,
+same as on the shop wifi, or use the address if that bothers you.
+
+If you would rather have neither warning: over a tailnet the traffic is already encrypted
+end to end by WireGuard, so `lan http` is a defensible choice there — you are not sending
+anything in the clear, you are letting the mesh do the encrypting. That does mean the shop
+wifi is unencrypted too, though, so it is a trade rather than a free win.
+
 ### If you want it easier to start
 
 Tailscale can run as a service, so the box is on the network from boot. The kiosk

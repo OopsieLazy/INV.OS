@@ -228,7 +228,14 @@ func banner(db, local string, lan bool, port int, tokened, secure bool) {
 	}
 	if lan {
 		for _, ip := range lanIPs() {
-			fmt.Printf("  shop      %s://%s:%d\n", scheme, ip, port)
+			/* An address in 100.64.0.0/10 is a private mesh — Tailscale and friends —
+			   not the shop wifi. Worth saying which is which: one of these works from
+			   the bench and the other works from anywhere, and they look identical. */
+			note := ""
+			if isMeshIP(ip) {
+				note = "   (works from anywhere on your tailnet)"
+			}
+			fmt.Printf("  shop      %s://%s:%d%s\n", scheme, ip, port, note)
 		}
 		if secure {
 			fmt.Println("  tls       on — self-signed, so each device warns once")
@@ -259,6 +266,15 @@ func lanURLs(lan bool, port int, secure bool) []string {
 		out = append(out, fmt.Sprintf("%s://%s:%d", scheme, ip, port))
 	}
 	return out
+}
+
+// isMeshIP reports whether an address is in 100.64.0.0/10 — RFC 6598 shared space, which
+// on a machine like this means a private mesh such as Tailscale rather than the shop LAN.
+// The distinction matters to a person: one address works from the bench, the other works
+// from a customer's car park, and nothing about the numbers says so.
+func isMeshIP(s string) bool {
+	ip := net.ParseIP(s).To4()
+	return ip != nil && ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127
 }
 
 // lanIPs lists this machine's addresses on the local network, so the banner can print

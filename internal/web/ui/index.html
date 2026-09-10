@@ -2814,8 +2814,22 @@ async function exec(line){
       if (info.lan){
         const shopUrls=(info.urls||[]).filter(u=>!/localhost|127\.0\.0\.1/.test(u));
         if (shopUrls.length){
-          print("  Open this on a tablet or phone on the same network:","w");
-          shopUrls.forEach(u=>print("    "+u,"g"));
+          /* A 100.64-100.127 address is a private mesh (Tailscale and friends), not the
+             shop wifi. They look identical and they are not: one works from the bench,
+             the other works from anywhere you can get online. Say which. */
+          const isMesh = u => /\/\/100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(u);
+          const lan = shopUrls.filter(u=>!isMesh(u));
+          const mesh = shopUrls.filter(isMesh);
+          if (lan.length){
+            print("  Open this on a tablet or phone on the same network:","w");
+            lan.forEach(u=>print("    "+u,"g"));
+          }
+          if (mesh.length){
+            print("");
+            print("  From anywhere, on any device signed into your tailnet:","w");
+            mesh.forEach(u=>print("    "+u,"c"));
+            print("    the shop machine has to be online, and nothing is exposed to the internet","d");
+          }
           // No QR here: the built-in encoder is version 1 only (14 bytes), which is
           // right for a bin code like INV:1101 but cannot hold a URL. A QR that
           // scans to nothing is worse than typing the address, so it stays out until
