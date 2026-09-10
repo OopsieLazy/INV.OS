@@ -11,10 +11,23 @@ seconds and tell me what is wrong"**.
 
 ## Where things point
 
-**The demo URL points at GitHub.** Specifically:
+**Two different things get published, and they are easy to confuse:**
 
-- the **demo** is a static HTML file → GitHub Pages (`<user>.github.io/invos/demo`)
-- every "get it" link → the **GitHub repo**, and downloads → the **Releases** page
+| | what it is | where it lives |
+|---|---|---|
+| **the product** | the full source. Nothing stripped, nothing gated. | `main` — pushed |
+| **the demo** | one HTML page BUILT from that source, running in the browser | `gh-pages` — pushed |
+
+The demo is not a cut-down copy of the app. It is the same `internal/web/ui/index.html`
+the binary serves, with one script appended that answers its data calls in the browser
+instead of over a socket. Everything works; the only limits are 500 items and the four
+things a browser genuinely cannot do (photos, shop access, legacy import, backup), which
+say so and point at the download.
+
+Rebuild and republish it any time with `./demo/publish-demo.sh`.
+
+- demo → **https://oopsielazy.github.io/INV.OS/**
+- every "get it" link → the **repo**, downloads → the **Releases** page
 - buy a domain later, when there is something to sell. A `github.io` URL costs nothing,
   never expires, and this audience trusts it more than a landing page with a logo.
 
@@ -53,6 +66,10 @@ Build it with `./make-release.sh`; everything below is verified by
 - [x] **`feedback`** — demo only, and the product says why it does not have one rather
       than pretending the command does not exist.
 - [x] **survives a refresh** (localStorage). That is when it stops feeling like a mock-up.
+- [x] **published** — `gh-pages` branch, built and pushed by `./demo/publish-demo.sh`
+- [ ] **flip Pages on — ONE SWITCH.** Settings → Pages → Source: *Deploy from a branch* →
+      `gh-pages` / `(root)`. Takes a minute, then the URL above works. Nothing else in
+      this file matters until this is done: everything links to it.
 - [ ] **works on a phone — YOUR TEST.** Run `invos.exe -lan`, open the printed https
       address on an actual phone, accept the certificate warning once. Resized desktop
       windows do not count.

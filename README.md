@@ -46,8 +46,10 @@ it, how much is left — and gets out of the way.
 
 ## Try it
 
-- **Live demo** — no signup, nothing to install: *(link)*
-- **Download** — *(releases)*
+- **[Live demo](https://oopsielazy.github.io/INV.OS/)** — the real app, running in your
+  browser. No signup, nothing to install, nothing sent anywhere.
+- **[Download](https://github.com/OopsieLazy/INV.OS/releases)** — Windows, Linux, macOS,
+  Raspberry Pi.
 
 ```bash
 invos.exe                # opens at localhost:8137
