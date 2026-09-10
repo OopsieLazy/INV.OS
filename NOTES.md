@@ -3396,3 +3396,32 @@ already work today — so D0 is only about making them one command instead of a 
 instructions.
 
 64 settings checks, 138 UI, 29 layout, 24 demo.
+
+## v27.3 — every bar button behaves the same
+
+Reported: only settings and help went back. Checked each one rather than guessing, and
+there were three separate reasons, which is why it looked arbitrary:
+
+- **`theme` was intercepted by a dead handler.** An older `if (id==="ptheme") return void
+  await run("theme")` sat above the new one and swallowed the click. The second handler
+  was never reached, so the button always re-opened the screen it was already on.
+- **`health` and `server` had nothing to press again.** They set the screen correctly and
+  no button lit, because only three buttons had the highlight wired. The LAN pill and the
+  save warning are buttons too.
+- **`keys` was not tracked at all**, so its screen had no way back by definition.
+- **`graph` never lit**, because its highlight follows `graphMode` and nothing repainted
+  the bar when that changed. It only appeared if something else happened to redraw.
+
+All five now do the same thing: go to the screen, light up while you are there, and go
+back and un-light when pressed again. The graph button closes the graph rather than
+reopening it.
+
+Un-lighting needed its own fix. `screenNow` was being cleared without repainting, so the
+bar went on claiming you were somewhere you had left. There is one `setScreen` now, and it
+repaints — but only when the value actually changed, since it runs on every command.
+
+The probe checks all three persistent buttons as a round trip: in, lit, out, un-lit. A bar
+where two of five buttons behave one way is worse than one where none of them do, because
+you cannot tell which is which.
+
+35 layout checks, 138 UI, 64 settings, 24 demo.

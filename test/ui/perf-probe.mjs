@@ -353,6 +353,28 @@ for (const [label, opts] of [
     check(`${label}: and the next command gives the graph back`,
       settingsScreen.cleared && settingsScreen.after > 40, JSON.stringify(settingsScreen));
 
+    /* Every bar button behaves the same way: it takes you to its screen, it lights up
+       while you are there, and pressing it again brings you back and un-lights. A bar
+       where two of five buttons do that is worse than one where none of them do, because
+       you cannot tell which is which. */
+    for (const [id, screen] of [['pset', 'settings'], ['phelp', 'help'], ['ptheme', 'theme']]) {
+      const r = await page.evaluate(async ([i, sc]) => {
+        const btn = () => document.getElementById(i);
+        if (!btn()) return { missing: true };
+        btn().click();
+        await new Promise(r2 => setTimeout(r2, 450));
+        const on = { screen: screenNow, lit: btn().classList.contains('on') };
+        btn().click();
+        await new Promise(r2 => setTimeout(r2, 450));
+        return { on, back: { screen: screenNow, lit: btn().classList.contains('on') } };
+      }, [id, screen]);
+      if (r.missing) continue;
+      check(`${label}: ${id} opens ${screen} and lights up`,
+        r.on.screen === screen && r.on.lit, JSON.stringify(r));
+      check(`${label}: pressing ${id} again goes back and un-lights`,
+        r.back.screen === '' && !r.back.lit, JSON.stringify(r));
+    }
+
     // Terminal text scales down so a shelf tree fits instead of wrapping.
     const fs = await page.evaluate(() =>
       parseFloat(getComputedStyle(document.getElementById('term')).fontSize));
