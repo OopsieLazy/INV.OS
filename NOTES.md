@@ -3251,3 +3251,54 @@ only works when a particular caller remembers to ask is a setting that does not 
 test caught exactly that.
 
 21 layout checks, 138 UI, 56 settings, 24 demo.
+
+## v26.9 — the bar stays, the keyboard behaves, and a way in from outside
+
+### The bar stays put
+
+Hiding the top bar was solving the wrong problem. It moved the layout every time it came
+and went, and a row that jumps while you are aiming at it reads as a mis-tap rather than
+as movement. So it never leaves: the shop name goes (it is the only thing on that row that
+is not a control) and the buttons shrink to 30px until all of them fit across the width
+with no sideways scroll.
+
+The double-tap gesture is gone with it. Only the graph's buttons toggle now, by a single
+tap on the canvas, and they FADE in place rather than taking space back — so nothing in
+the layout moves when they come and go either.
+
+### The command line you could not get out of
+
+My own fault, from the previous version. `--vh` was being set from `visualViewport`
+unconditionally, which is right while a keyboard is up and wrong the rest of the time: any
+transient viewport report — a toolbar sliding away, a rotate, a pinch — became a
+permanent short page, and the terminal ended up a sliver under a command line with no way
+back.
+
+Now it only ever shrinks for a real keyboard, only on a phone, with a floor of 45% of the
+window, and it is cleared outright on blur, on rotate, and when leaving the phone
+breakpoint. If in doubt it does nothing, which is the right default for a workaround.
+Tapping the graph also dismisses the keyboard, which is the obvious way out and was
+missing.
+
+### Remote access, and the two things that would have broken it
+
+New REMOTE.md. The recommendation is Tailscale: free, no domain, no open ports, no
+certificate, and the login is the one you already have with 2FA on it. A Cloudflare Tunnel
+second, when somebody needs a plain URL without installing anything. Port forwarding
+never.
+
+Writing it turned up two real problems in our own code:
+
+- **Tailscale would have been refused by our own defence.** It hands out addresses in
+  `100.64.0.0/10`, which is RFC 6598 shared space, not RFC 1918 — and Go's `IsPrivate`
+  says false for it. The "local network only" guard would have blocked every remote-access
+  setup worth recommending. Mesh addresses count as local now; the public internet still
+  does not, and there is a test for both.
+- **A tunnel would have bypassed the key entirely.** `cloudflared` forwards to
+  `127.0.0.1`, so every remote visitor arrives as loopback — and loopback is deliberately
+  exempt from the key, because whoever is at the machine can read the database file
+  anyway. Behind a tunnel that exemption hands over the whole inventory. `-require-key`
+  drops it, and the binary refuses to start with `-require-key` and no key rather than
+  looking protected and not being.
+
+22 layout checks, 33 security, 138 UI, 56 settings, 24 demo.

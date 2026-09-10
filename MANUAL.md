@@ -24,6 +24,7 @@ invos.exe -db shop.db -port 9000 -token secret -open=false
 | `-token <s>` | require this token on API calls; for a LAN you do not fully trust |
 | `-tls=false` | turn off encryption for shop access (it is **on** by default) |
 | `-open-to-internet` | answer requests from outside your local network — **leave this off** |
+| `-require-key` | make the key apply to localhost too — needed behind a tunnel or proxy |
 | `-open=false` | do not open a window on start (for a shop box that boots headless) |
 | `-window=false` | open as a normal browser tab instead of an app window |
 | `-version` | print the version and exit |
@@ -214,6 +215,17 @@ Switched while the station is running; devices already connected reload once.
 network can read what crosses it — quantities, part numbers, and your shop key if one is
 set. A browser can accept a certificate; a printer that never will is a reason to make an
 exception, not a reason to drop encryption for the whole shop.
+
+### Getting to it from outside the shop
+
+Short version: **install Tailscale on the shop box and on your phone**, sign in to both
+with the same account, and the station is reachable from anywhere with no open ports, no
+domain and no new password. See **[REMOTE.md](REMOTE.md)** for that and the two
+alternatives, including why port forwarding is not one of them.
+
+If you put a tunnel or a reverse proxy in front of it, add `-require-key`. A tunnel
+forwards to localhost, so every remote visitor arrives looking like the person sitting at
+the machine — and that person is deliberately exempt from the key.
 
 ### Locking it to people you trust
 

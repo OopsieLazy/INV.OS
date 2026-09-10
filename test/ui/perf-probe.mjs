@@ -158,19 +158,11 @@ for (const [label, opts] of [
   // On a phone the bar buttons start hidden, so the visible touch target is the handle.
   // Measuring a deliberately hidden element and calling it a regression is the test being
   // wrong, not the product.
-  // On a phone the bar starts hidden, so reveal it to measure the real target rather
-  // than measuring a deliberately hidden element and calling it a regression.
-  const touch = m.pageW < 760
-    ? await page.evaluate(() => {
-        const had = document.body.classList.contains('bar-hide');
-        document.body.classList.remove('bar-hide');
-        const b = document.querySelector('.barbtn');
-        const h = b ? b.getBoundingClientRect().height : 0;
-        if (had) document.body.classList.add('bar-hide');
-        return h;
-      })
-    : m.btnH;
-  check(`${label}: touch targets are at least 32px`, touch >= 32, `${Math.round(touch)}px`);
+  // 30px on a phone: the bar is always visible now, so every button has to fit across
+  // the width without scrolling, and that caps how tall they can reasonably be.
+  const minTouch = m.pageW < 760 ? 30 : 32;
+  check(`${label}: touch targets are big enough to hit`, m.btnH >= minTouch,
+    `${Math.round(m.btnH)}px, want ${minTouch}`);
 
   if (m.pageW < 760) {
     /* On a phone you should only ever scroll DOWN. Pre-formatted terminal lines drag the
@@ -205,8 +197,19 @@ for (const [label, opts] of [
         shopName: vis(document.getElementById('barl')),
       };
     });
-    check(`${label}: both bars start hidden`,
-      chrome0.barHidden && chrome0.gbtnsHidden, JSON.stringify(chrome0));
+    /* The bar STAYS. Hiding it moved the layout every time it came and went, and a row
+       that jumps while you are aiming at it reads as a mis-tap. Only the graph buttons
+       toggle, and they fade in place rather than taking space back. */
+    check(`${label}: the top bar is always there, and the graph buttons start hidden`,
+      !chrome0.barHidden && chrome0.gbtnsHidden, JSON.stringify(chrome0));
+
+    // Everything on the bar has to fit across the width — no sideways scroll.
+    const barFits = await page.evaluate(() => {
+      const b = document.getElementById('bar');
+      return { overflow: b.scrollWidth - b.clientWidth, buttons: b.querySelectorAll('.barbtn').length };
+    });
+    check(`${label}: the whole bar fits without scrolling`,
+      barFits.overflow <= 1 && barFits.buttons >= 4, JSON.stringify(barFits));
     check(`${label}: the HUD readout is NOT hidden with them`,
       chrome0.hudTop && chrome0.hudBot, JSON.stringify(chrome0));
     check(`${label}: the shop name is dropped from the bar, leaving the buttons`,
@@ -220,13 +223,17 @@ for (const [label, opts] of [
       }
       await page.waitForTimeout(250);
     };
+    // Tapping around the terminal must not move anything any more.
+    const beforeTaps = await page.evaluate(() =>
+      document.getElementById('graphpane').getBoundingClientRect().top);
     await dbl('#term', { x: 40, y: 60 });
-    const afterTerm = await page.evaluate(() => ({
-      bar: !document.body.classList.contains('bar-hide'),
-      gbtns: !document.body.classList.contains('gbtns-hide'),
+    const afterTaps = await page.evaluate(() => ({
+      paneTop: document.getElementById('graphpane').getBoundingClientRect().top,
+      barHidden: document.body.classList.contains('bar-hide'),
     }));
-    check(`${label}: double-tapping the terminal shows the top bar only`,
-      afterTerm.bar && !afterTerm.gbtns, JSON.stringify(afterTerm));
+    check(`${label}: tapping the terminal no longer hides the bar or moves the panes`,
+      !afterTaps.barHidden && Math.abs(afterTaps.paneTop - beforeTaps) < 2,
+      JSON.stringify({ beforeTaps, ...afterTaps }));
 
     /* The graph takes a SINGLE tap, because the canvas already knows whether the gesture
        moved — so a tap can be told from a rotate, which is what makes one tap safe there

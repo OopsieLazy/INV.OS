@@ -230,6 +230,45 @@ check('turning shop access on does not quietly disable encryption',
   await browser.close();
 }
 
+// ── remote access ───────────────────────────────────────────────────────────
+/* A WireGuard mesh (Tailscale and friends) hands out 100.64.0.0/10, which is NOT
+   RFC1918 — Go's IsPrivate says false for it. Without allowing it the internet guard
+   would have refused every remote-access setup worth recommending, which is the kind of
+   thing you only find by trying it. */
+{
+  const { execFileSync } = await import('node:child_process');
+  const probe = [
+    'package main',
+    'import ("fmt";"net")',
+    'var cgnat = &net.IPNet{IP: net.IPv4(100,64,0,0), Mask: net.CIDRMask(10,32)}',
+    'func ok(s string) bool {',
+    '  ip := net.ParseIP(s)',
+    '  if ip == nil { return false }',
+    '  if ip4 := ip.To4(); ip4 != nil && cgnat.Contains(ip4) { return true }',
+    '  return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()',
+    '}',
+    'func main(){',
+    '  for _, s := range []string{"100.64.0.1","100.115.92.3","192.168.1.5","8.8.8.8","1.1.1.1"} {',
+    '    fmt.Println(s + "=" + fmt.Sprint(ok(s)))',
+    '  }',
+    '}',
+  ].join(String.fromCharCode(10));
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir: td } = await import('node:os');
+  const dir = mkdtempSync(join(td(), 'invos-cgnat-'));
+  writeFileSync(join(dir, 'main.go'), probe);
+  const out = execFileSync('go', ['run', 'main.go'], {
+    cwd: dir, encoding: 'utf8',
+    env: { ...process.env, PATH: `${process.env.PATH};C:\Program Files\Go\bin` },
+  });
+  const seen = Object.fromEntries(out.trim().split(String.fromCharCode(10))
+    .map(l => l.trim()).filter(Boolean).map(l => l.split('=')));
+  check('a mesh address (Tailscale, 100.64/10) counts as local',
+    seen['100.64.0.1'] === 'true' && seen['100.115.92.3'] === 'true', out.trim());
+  check('and the public internet still does not',
+    seen['8.8.8.8'] === 'false' && seen['1.1.1.1'] === 'false', out.trim());
+}
+
 // ── flooding ────────────────────────────────────────────────────────────────
 // Not just malice: a device stuck in a retry loop can take a shop's station down.
 const burst = await Promise.all(

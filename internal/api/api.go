@@ -27,6 +27,10 @@ type Server struct {
 	// system and is deliberately not one.
 	Token string
 
+	// RequireKey makes the key apply to loopback too. Needed behind a tunnel or a
+	// reverse proxy, where every remote visitor arrives as 127.0.0.1.
+	RequireKey bool
+
 	// OpenToInternet drops the local-network requirement. Off by default: a shop
 	// inventory has no business answering the open internet, and the usual way that
 	// happens is an accident nobody noticed.
@@ -110,7 +114,15 @@ func (s *Server) auth(next http.Handler) http.Handler {
 
 		   So: loopback is exempt, remote is not. A tablet holds the key itself, entered
 		   once by a person who was told it. */
-		if s.Token != "" && strings.HasPrefix(r.URL.Path, "/api/") && !isLocal(r) &&
+		/* RequireKey drops the loopback exemption, and it exists because of tunnels.
+
+		   A Cloudflare Tunnel or any reverse proxy runs ON the station and forwards to
+		   127.0.0.1 — so every remote visitor arrives looking like the person sitting at
+		   the machine, and the exemption that makes the console usable would hand them
+		   the whole inventory. Anyone putting this on the internet needs the key to apply
+		   to everybody, including things that claim to be local. */
+		exempt := isLocal(r) && !s.RequireKey
+		if s.Token != "" && strings.HasPrefix(r.URL.Path, "/api/") && !exempt &&
 			!tokenOK(s.Token, r.Header.Get("X-INVOS-Token")) {
 			writeErr(w, http.StatusUnauthorized, errors.New("this station needs a key"))
 			return

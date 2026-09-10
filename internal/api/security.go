@@ -260,14 +260,27 @@ func isLocal(r *http.Request) bool {
 	-open-to-internet exists because refusing to run somewhere is worse than refusing by
 	default and being told how to override it. It is loud, on purpose.
 */
+// cgnat is 100.64.0.0/10, the shared address space from RFC 6598. It is not routable on
+// the public internet, and it is what Tailscale and other WireGuard meshes hand out — so
+// a laptop reaching this station over a private mesh from a hotel arrives from here.
+// Go's IsPrivate covers RFC 1918 only and says false for it, which would have refused
+// every remote-access setup worth recommending.
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
 func isPrivateClient(r *http.Request) bool {
 	ip := net.ParseIP(clientIP(r))
 	if ip == nil {
 		// An address that will not parse is not one we can vouch for.
 		return false
 	}
+	if ip4 := ip.To4(); ip4 != nil && cgnat.Contains(ip4) {
+		return true
+	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() ||
+		// Unique local addresses — the IPv6 equivalent of 192.168, and what a mesh
+		// hands out on the v6 side.
+		(len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc)
 }
 
 func (s *Server) privateOnly(next http.Handler) http.Handler {

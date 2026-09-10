@@ -64,6 +64,8 @@ func run() error {
 		verbose = flag.Bool("v", false, "verbose request logging")
 		showVer = flag.Bool("version", false, "print version and exit")
 		useTLS  = flag.Bool("tls", true, "encrypt shop access with a self-signed certificate (localhost stays plain http)")
+		reqKey  = flag.Bool("require-key", false,
+			"require the key from every caller including localhost (use behind a tunnel or proxy)")
 		openNet = flag.Bool("open-to-internet", false,
 			"answer requests from outside the local network (OFF by default, and it should stay off)")
 	)
@@ -98,6 +100,10 @@ func run() error {
 	   forward set up years ago for something else. Refused by default; the flag exists so
 	   somebody who genuinely means it is not stuck. */
 	srv.OpenToInternet = *openNet
+	srv.RequireKey = *reqKey
+	if *reqKey && *token == "" {
+		return fmt.Errorf("-require-key needs a key: add -token <something-long>")
+	}
 	if *openNet {
 		slog.Warn("-open-to-internet is set: this station will answer requests from ANY address")
 	}

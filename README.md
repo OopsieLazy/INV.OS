@@ -76,6 +76,7 @@ Then type `tutorial` for a one-minute guided tour, or just start typing.
 | `undo` | reverse the last change |
 
 Full command reference and setup guide: **[MANUAL.md](MANUAL.md)**.
+Reaching it from outside the shop: **[REMOTE.md](REMOTE.md)**.
 
 ## Coming from a spreadsheet
 
