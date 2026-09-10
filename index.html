@@ -281,7 +281,6 @@
        The HUD frame STAYS. It is not clutter — it is the readout that tells you what
        view you are in and how many nodes are on screen, and hiding it leaves an
        unlabelled cloud of dots. Only the buttons go. */
-    body.bar-hide #bar{ display:none }
 
     /* The graph buttons stack down the right edge rather than across the top. A phone is
        tall and narrow: a horizontal row of five buttons eats the width the graph needs,
@@ -299,10 +298,22 @@
     #gbtns span{ font-size:12px; padding:7px 9px; text-align:center; }
     body.gbtns-hide #gbtns{ opacity:0; pointer-events:none }
 
-    /* The shop name is the one thing on the bar that is not a control, and on a phone
-       the row is too narrow to carry both. The buttons win. */
+    /* The bar STAYS. Hiding it was solving the wrong problem: it moved the layout every
+       time it came and went, and a row that jumps around while you are trying to tap it
+       is worse than one that is always there. The fix is to make it fit instead.
+
+       The shop name goes — it is the one thing on the row that is not a control — and the
+       buttons shrink until all of them fit across the width without scrolling. */
     #barl{ display:none }
-    #bar{ justify-content:flex-end }
+    #bar{
+      justify-content:space-between; padding:5px 8px; overflow:visible;
+      gap:4px;
+    }
+    #barr{ display:flex; flex:1; gap:4px; justify-content:flex-end; min-width:0 }
+    .warnpill,.barbtn{
+      height:30px; padding:0 8px; font-size:11px; letter-spacing:.02em;
+      flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+    }
   }
 
 
@@ -328,7 +339,12 @@
     #main, #term{ min-width:0 }
     /* Safe-area insets: with viewport-fit=cover the page runs under the notch and the
        home indicator, and the command line is the thing that must never be under them. */
-    /* The prompt sticks to the bottom of the terminal instead of scrolling away with
+    /* Nothing in the layout moves when chrome is toggled: the graph's buttons fade in
+       place rather than taking or giving back space, and the bar never leaves. A pane
+       that shifts under your thumb while you are aiming at it is the worst kind of bug,
+       because it reads as a mis-tap rather than as movement.
+
+       The prompt sticks to the bottom of the terminal instead of scrolling away with
        the output. Two things fall out of that, and both were asked for: the command line
        is always where your thumb expects it, and you can scroll back up through a long
        listing to tap a shelf without losing the place you type. */
@@ -4846,12 +4862,29 @@ function initKeyboardScroll(){
      to chase the input. Without this the layout stays full height, the keyboard covers
      the bottom of it, and the browser scrolls the whole document — which opens a gap
      above and takes the terminal's own scrollback out of reach. */
+  /* Only ever shrink for a keyboard, and only on a phone.
+     
+     The first cut set --vh from visualViewport unconditionally. That is fine while the
+     keyboard is up and wrong the rest of the time: any transient viewport report — a
+     browser toolbar sliding away, a rotate, a zoom — became a permanent short page, and
+     the terminal ended up a sliver under a command line you could not get out of.
+     
+     So: a floor of 45% of the window, never applied on a desktop, and cleared outright
+     the moment the input loses focus. If in doubt this does nothing, which is the right
+     default for a workaround. */
+  const clearFit = () => {
+    document.documentElement.style.removeProperty("--vh");
+    window.scrollTo(0, 0);
+    if (typeof gWake === "function") gWake();
+  };
+
   const fit = () => {
     const vv = window.visualViewport;
-    if (!vv) return;
-    document.documentElement.style.setProperty("--vh", vv.height + "px");
-    // Undo any scrolling the browser already did to chase the caret.
-    window.scrollTo(0, 0);
+    if (!vv || !isPhone() || document.activeElement !== cmd){ clearFit(); return; }
+    const h = Math.max(vv.height, window.innerHeight * 0.45);
+    if (h >= window.innerHeight - 4){ clearFit(); return; }   // no keyboard: leave it alone
+    document.documentElement.style.setProperty("--vh", Math.round(h) + "px");
+    window.scrollTo(0, 0);                                    // undo the caret chase
     if (typeof gWake === "function") gWake();
   };
 
@@ -4860,43 +4893,33 @@ function initKeyboardScroll(){
       fit();
       if (document.activeElement === cmd) setTimeout(toBottom, 60);
     });
-    visualViewport.addEventListener("scroll", () => window.scrollTo(0, 0));
-    fit();
   }
-  cmd.addEventListener("focus", () => { fit(); setTimeout(toBottom, 250); });
-  cmd.addEventListener("blur", () => setTimeout(fit, 120));
+  cmd.addEventListener("focus", () => { setTimeout(fit, 120); setTimeout(toBottom, 260); });
+  cmd.addEventListener("blur", clearFit);
+  // Rotating or resizing with the keyboard shut must never leave a shortened page behind.
+  addEventListener("orientationchange", () => setTimeout(clearFit, 200));
+  matchMedia(PHONE_Q).addEventListener("change", clearFit);
+
+  /* Tapping the graph should put the keyboard away. Without this the only way out on a
+     phone is the system back gesture, which is what "you cannot get out of it" means. */
+  document.getElementById("graphpane")?.addEventListener("pointerdown", () => {
+    if (document.activeElement === cmd) cmd.blur();
+  }, true);
 }
 
 function initPhoneChrome(){
   const apply = () => {
-    const phone = isPhone();
-    document.body.classList.toggle("bar-hide", phone);
-    document.body.classList.toggle("gbtns-hide", phone);
+    document.body.classList.remove("bar-hide");        // the bar always stays now
+    document.body.classList.toggle("gbtns-hide", isPhone());
     if (typeof gWake === "function") gWake();
   };
   apply();
   matchMedia(PHONE_Q).addEventListener("change", apply);
 
-  /* The TERMINAL keeps double-tap. The graph does not: a tap there is already known to
-     be a tap and not a drag, because the canvas tracks whether the gesture moved, so a
-     single tap is safe and reads better. The terminal has no such signal and its rows are
-     dense, so a single tap would fire while somebody is trying to select one.
-
-     Rolled by hand rather than using dblclick, which fires unreliably on mobile Safari
-     and does not fire at all when the first tap lands on something that handles it. */
-  let lastTap = 0;
-  document.addEventListener("pointerup", e => {
-    if (!isPhone()) return;
-    if (e.target.closest("#bar") || e.target.closest("#gbtns")) return;  // real controls
-    if (!e.target.closest("#term")) return;
-    const now = performance.now();
-    if (now - lastTap < 400){
-      setChrome("bar", document.body.classList.contains("bar-hide"));
-      lastTap = 0;
-      return;
-    }
-    lastTap = now;
-  }, true);
+  /* No gesture for the top bar any more. It is always there and it fits, which is a
+     better answer than a hidden control people have to be told about — and it means the
+     layout never moves. Only the graph's buttons toggle, by a single tap on the canvas,
+     which is safe because the canvas knows whether the gesture moved. */
 }
 // tunable settings (persisted in state.cfg) with metadata for the settings screen
 const SETTINGS = [
