@@ -3302,3 +3302,31 @@ Writing it turned up two real problems in our own code:
   looking protected and not being.
 
 22 layout checks, 33 security, 138 UI, 56 settings, 24 demo.
+
+## v27.0 — the bar spans the top, and the graph gets out of the way while you type
+
+### The bar is a nav bar now
+
+It was bunched in the right corner. The buttons take an equal share of the width instead,
+so the row reads as a nav bar and every target is as wide as it can be — which on a phone
+is most of the point of having a bar at all.
+
+### The graph folds away while the keyboard is up
+
+This is the one that mattered. A keyboard takes about half a phone screen, and the graph
+was taking 42% of what was left — so a search had nowhere to put its answers. You typed
+and could not see what you had found, which is the only thing you actually want while
+typing.
+
+The graph now collapses for as long as the keyboard is open, and the terminal takes that
+space. Measured on an iPhone 13 viewport: the pane goes to zero, the terminal gains the
+height, and both come back when the keyboard closes.
+
+It COLLAPSES rather than bouncing — height and opacity are transitioned, so it folds and
+unfolds. The bounce was the complaint, not the resize.
+
+A picture-in-picture corner was the other option and it is worse here: it would sit on top
+of the results, which are the thing that needed room. The graph is still one tap away the
+moment you are done typing.
+
+27 layout checks, 138 UI, 56 settings, 33 security, 24 demo.

@@ -286,6 +286,52 @@ for (const [label, opts] of [
       swapped.after < swapped.before,
       `graph top ${Math.round(swapped.before)} -> ${Math.round(swapped.after)}`);
 
+    /* The bar spans the width instead of bunching in a corner: every button takes an
+       equal share, which is both a nav bar and the widest each target can be. */
+    const spread = await page.evaluate(() => {
+      const bar = document.getElementById('bar');
+      const btns = [...bar.querySelectorAll('.barbtn, .warnpill')];
+      const rs = btns.map(b => b.getBoundingClientRect());
+      const barR = bar.getBoundingClientRect();
+      const widths = rs.map(r => r.width);
+      return {
+        n: btns.length,
+        leftGap: rs.length ? rs[0].left - barR.left : 0,
+        rightGap: rs.length ? barR.right - rs[rs.length - 1].right : 0,
+        spread: (Math.max(...widths) - Math.min(...widths)) / Math.max(...widths),
+        barW: barR.width,
+      };
+    });
+    check(`${label}: the bar buttons span the width, not bunched in a corner`,
+      spread.leftGap < spread.barW * 0.25 && spread.rightGap < spread.barW * 0.25,
+      JSON.stringify(spread));
+    check(`${label}: and they share the width evenly`,
+      spread.spread < 0.35, JSON.stringify(spread));
+
+    /* While the keyboard is up the graph folds away, because a search you cannot see the
+       results of is a search that did not happen. */
+    const typing = await page.evaluate(async () => {
+      const pane = document.getElementById('graphpane');
+      const term = document.getElementById('term');
+      const before = { pane: pane.getBoundingClientRect().height,
+                       term: term.getBoundingClientRect().height };
+      document.body.classList.add('kbd');       // what the keyboard handler does
+      await new Promise(r => setTimeout(r, 320));
+      const after = { pane: pane.getBoundingClientRect().height,
+                      term: term.getBoundingClientRect().height };
+      document.body.classList.remove('kbd');
+      await new Promise(r => setTimeout(r, 320));
+      const back = pane.getBoundingClientRect().height;
+      return { before, after, back };
+    });
+    check(`${label}: the graph folds away while typing`,
+      typing.after.pane < 2 && typing.before.pane > 40,
+      JSON.stringify(typing));
+    check(`${label}: and the terminal gets that space, so results are visible`,
+      typing.after.term > typing.before.term + 40, JSON.stringify(typing));
+    check(`${label}: the graph comes back when the keyboard goes`,
+      Math.abs(typing.back - typing.before.pane) < 4, JSON.stringify(typing));
+
     // Terminal text scales down so a shelf tree fits instead of wrapping.
     const fs = await page.evaluate(() =>
       parseFloat(getComputedStyle(document.getElementById('term')).fontSize));
