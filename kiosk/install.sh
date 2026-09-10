@@ -78,7 +78,14 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable --now invos.service
+systemctl --user enable invos.service
+# restart, not `enable --now`. --now only STARTS a service that is not already running,
+# so installing over a station that is up left the OLD process serving — the new unit
+# written, daemon-reload done, and the previous binary still answering. That is not a
+# theoretical failure: it is how a station ended up running a python http.server long
+# after it had been replaced, with the health check below reporting 404 and nothing
+# saying why. An install has to end with the thing you just installed running.
+systemctl --user restart invos.service
 
 # Without lingering the service dies at logout, which is exactly what a shop box does
 # when the screen sleeps and nobody is logged in.
