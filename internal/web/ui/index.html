@@ -263,21 +263,19 @@
     body{ font-size:12px }
     #cmd{ font-size:16px }          /* except the input: under 16px and iOS zooms */
 
-    /* The top bar and the graph's own buttons are hidden until asked for. On a phone
-       they cost two rows of a short screen and are wanted for a few seconds at a time.
-       #chrome-tap is the handle; tapping anywhere else puts them away again. */
-    body.chrome-hide #bar{ display:none }
-    body.chrome-hide #gbtns{ display:none }
-    body.chrome-hide #hud-top, body.chrome-hide #hud-bot{ display:none }
-    #chrome-tap{
-      display:flex; align-items:center; justify-content:center;
-      position:fixed; top:max(4px, env(safe-area-inset-top)); right:8px; z-index:60;
-      width:34px; height:34px; border-radius:8px;
-      border:1px solid rgba(97,214,214,.28); color:var(--cyan);
-      background:rgba(12,12,12,.72); backdrop-filter:blur(2px);
-      font-size:15px; line-height:1; user-select:none; cursor:pointer;
-    }
-    body:not(.chrome-hide) #chrome-tap{ background:rgba(97,214,214,.16) }
+    /* Two bits of furniture, hidden independently, each by a double-tap in its own
+       half of the screen: the terminal's top bar, and the graph's buttons.
+
+       The HUD frame STAYS. It is not clutter — it is the readout that tells you what
+       view you are in and how many nodes are on screen, and hiding it leaves an
+       unlabelled cloud of dots. Only the buttons go. */
+    body.bar-hide #bar{ display:none }
+    body.gbtns-hide #gbtns{ display:none }
+
+    /* The shop name is the one thing on the bar that is not a control, and on a phone
+       the row is too narrow to carry both. The buttons win. */
+    #barl{ display:none }
+    #bar{ justify-content:flex-end }
   }
 
 
@@ -300,7 +298,17 @@
     #main, #term{ min-width:0 }
     /* Safe-area insets: with viewport-fit=cover the page runs under the notch and the
        home indicator, and the command line is the thing that must never be under them. */
-    #promptrow{ padding-bottom:env(safe-area-inset-bottom, 0) }
+    /* The prompt sticks to the bottom of the terminal instead of scrolling away with
+       the output. Two things fall out of that, and both were asked for: the command line
+       is always where your thumb expects it, and you can scroll back up through a long
+       listing to tap a shelf without losing the place you type. */
+    #promptrow{
+      position:sticky; bottom:0; z-index:2;
+      margin-top:auto;                 /* sits at the bottom when the output is short */
+      padding-top:4px;
+      padding-bottom:env(safe-area-inset-bottom, 0);
+      background:var(--bg);
+    }
     #term{ padding-left:max(12px, env(safe-area-inset-left));
            padding-right:max(12px, env(safe-area-inset-right)) }
     #bar{ padding-top:max(6px, env(safe-area-inset-top)) }
@@ -315,7 +323,6 @@
 </head>
 <body>
 
-<div id="chrome-tap" role="button" aria-label="show or hide the bars" title="show/hide the bars">⋯</div>
 <div id="bar"><span id="barl"><b>INVENTORY</b></span><span id="barr"></span></div>
 <div id="main">
 <div id="term">
@@ -3907,41 +3914,74 @@ const gc=$("gcanvas"), gpane=$("graphpane");
 let hudOn=true, sweepT=0;   // HUD frame + boot-sweep animation clock
 
 /* ── phone chrome ────────────────────────────────────────────────────────────
-   On a phone the title bar and the graph's buttons are hidden until asked for. They are
-   wanted for a few seconds at a time and they cost two rows of an already short screen.
+   A phone screen is short, and two rows of furniture is a lot of it. Both bars hide, and
+   they hide INDEPENDENTLY, each by a double-tap in the half of the screen it belongs to:
+   double-tap the graph to put its buttons away, double-tap the terminal to put the top
+   bar away. Same gesture brings them back.
 
-   The handle stays visible, because a control you have to know about is not a control.
-   Tapping it shows the bars; tapping anywhere else puts them away — which is the part
-   that matters, since the whole point is that they are not there while you work. */
+   Double-tap rather than a single one, because a single tap on the graph picks a node and
+   a single tap in the terminal selects a row. Those are the primary actions and they are
+   not worth breaking for a toggle.
+
+   The HUD frame is deliberately NOT part of this. It is the readout — which view, how
+   many nodes — and without it you are looking at an unlabelled cloud of dots. */
 const PHONE_Q = "(max-width: 760px)";
 function isPhone(){ return matchMedia(PHONE_Q).matches; }
 
-function setChrome(show){
-  document.body.classList.toggle("chrome-hide", !show);
-  // The pane changes height when the bars come and go. gDraw re-measures every frame,
+function setChrome(which, show){
+  document.body.classList.toggle(which === "bar" ? "bar-hide" : "gbtns-hide", !show);
+  // The pane changes height when the bar comes and goes. gDraw re-measures every frame,
   // so waking it is all that is needed — but it does have to be woken, or the canvas
-  // keeps the old size until something else happens to ask for a frame.
+  // keeps the old size until something else asks for a frame.
   if (typeof gWake === "function") gWake();
 }
 
+/* Bring the prompt into view when the keyboard opens.
+
+   On a phone the keyboard takes half the screen, and the browser's own scrolling puts the
+   focused input just above it — which on a full-height flex layout can leave the newest
+   output hidden behind the keyboard. visualViewport is the only thing that actually knows
+   how much room is left. */
+function initKeyboardScroll(){
+  const term = document.getElementById("term");
+  const cmd = document.getElementById("cmd");
+  if (!term || !cmd) return;
+  const toBottom = () => { term.scrollTop = term.scrollHeight; };
+  cmd.addEventListener("focus", () => setTimeout(toBottom, 250));
+  if (window.visualViewport){
+    visualViewport.addEventListener("resize", () => {
+      if (document.activeElement === cmd) setTimeout(toBottom, 60);
+    });
+  }
+}
+
 function initPhoneChrome(){
-  const tap = document.getElementById("chrome-tap");
-  if (!tap) return;
-  const apply = () => setChrome(!isPhone());
+  const apply = () => {
+    const phone = isPhone();
+    document.body.classList.toggle("bar-hide", phone);
+    document.body.classList.toggle("gbtns-hide", phone);
+    if (typeof gWake === "function") gWake();
+  };
   apply();
   matchMedia(PHONE_Q).addEventListener("change", apply);
 
-  tap.addEventListener("click", e => {
-    e.stopPropagation();
-    setChrome(document.body.classList.contains("chrome-hide"));
-  });
-
-  // Anywhere else puts them away. Capture phase, so it still fires for taps on the
-  // canvas and on terminal rows, which stop propagation of their own.
-  document.addEventListener("pointerdown", e => {
-    if (!isPhone() || document.body.classList.contains("chrome-hide")) return;
-    if (e.target.closest("#chrome-tap") || e.target.closest("#bar") || e.target.closest("#gbtns")) return;
-    setChrome(false);
+  /* Rolled by hand rather than using dblclick, which fires unreliably on mobile Safari
+     and does not fire at all when the first tap lands on something that handles it. */
+  let lastTap = 0, lastZone = "";
+  document.addEventListener("pointerup", e => {
+    if (!isPhone()) return;
+    if (e.target.closest("#bar") || e.target.closest("#gbtns")) return;  // real controls
+    const zone = e.target.closest("#graphpane") ? "gbtns"
+               : e.target.closest("#term") ? "bar" : "";
+    if (!zone) return;
+    const now = performance.now();
+    if (zone === lastZone && now - lastTap < 400){
+      const cls = zone === "bar" ? "bar-hide" : "gbtns-hide";
+      setChrome(zone, document.body.classList.contains(cls));
+      lastTap = 0; lastZone = "";
+      return;
+    }
+    lastTap = now; lastZone = zone;
   }, true);
 }
 // tunable settings (persisted in state.cfg) with metadata for the settings screen
@@ -5415,15 +5455,53 @@ function bindGraphPointer(cv, win){
     gScale=Math.min(6,Math.max(0.02,gScale*f));
     noteUserZoom();                           // stop auto-fitting over their choice
   }, {passive:false});
+  /* Touch: one finger turns the scene, two fingers move and scale it.
+     
+     A phone has no wheel and no second mouse button, so without a two-finger gesture the
+     only way to frame anything was `graph home` and hope. Pinch is the zoom everybody
+     already knows, and dragging with two fingers down is a pan — one finger is taken by
+     rotate, and stealing it for pan would leave no way to turn a 3D graph at all. */
+  let gPinchD = 0, gPinchXY = null;
+  const touchMid = ts => {
+    const r = cv.getBoundingClientRect();
+    return [(ts[0].clientX + ts[1].clientX)/2 - r.left,
+            (ts[0].clientY + ts[1].clientY)/2 - r.top];
+  };
+  const touchDist = ts => Math.hypot(ts[0].clientX - ts[1].clientX,
+                                     ts[0].clientY - ts[1].clientY);
+
   cv.addEventListener("touchstart", e=>{
     gWake();
+    if (e.touches.length >= 2){
+      // Two fingers down: stop whatever one finger was doing, or the scene lurches as
+      // the pinch starts.
+      gDrag=null; gPanning=false; gLastXY=null;
+      gPinchD = touchDist(e.touches);
+      gPinchXY = touchMid(e.touches);
+      return;
+    }
     const t=e.touches[0], r=cv.getBoundingClientRect();
     const ox=t.clientX-r.left, oy=t.clientY-r.top;
     const n=gPick(ox,oy);
     gMoved=false; gLastXY=[ox,oy];
     if (n) gDrag=n; else gPanning=true;
   },{passive:true});
+
   cv.addEventListener("touchmove", e=>{
+    if (e.touches.length >= 2){
+      const d = touchDist(e.touches), mid = touchMid(e.touches);
+      if (gPinchD > 0){
+        gScale = Math.min(6, Math.max(0.02, gScale * (d / gPinchD)));
+        // Pan by the midpoint, so two fingers scale AND move in the same gesture —
+        // which is what the hand expects, and what every map does.
+        if (gPinchXY){ gOX += mid[0]-gPinchXY[0]; gOY += mid[1]-gPinchXY[1]; }
+        noteUserZoom();
+        gWake();
+      }
+      gPinchD = d; gPinchXY = mid; gMoved = true;
+      e.preventDefault();
+      return;
+    }
     const t=e.touches[0], r=cv.getBoundingClientRect();
     const ox=t.clientX-r.left, oy=t.clientY-r.top;
     if (!gLastXY) return;
@@ -5447,6 +5525,8 @@ function bindGraphPointer(cv, win){
     gSpinIdleAt = performance.now();
     gDriftT = 0;
     gDrag=null; gPanning=false; gLastXY=null;
+    // Lifting one finger of a pinch must not be read as the start of a new one.
+    if (e.touches.length < 2){ gPinchD = 0; gPinchXY = null; }
   });
 }
 bindGraphPointer(gc, window);
@@ -6416,6 +6496,7 @@ barr.addEventListener("click", async e=>{
 });
 
 initPhoneChrome();
+initKeyboardScroll();
 
 load().then(async ()=>{
   applyTheme(state.theme||"campbell"); hudOn=state.hud!==false; gCores=state.cores!==false;

@@ -327,6 +327,16 @@ what is connected to what.
 **Driving it:** drag empty space to rotate, drag a node to move it, scroll to zoom,
 **alt+h** recentres, **alt+g** cycles the view. Click a node to drill into it.
 
+**On a phone or tablet:** one finger turns the scene, **two fingers pinch to zoom and
+drag to move**. One finger is taken by rotate — stealing it for panning would leave no way
+to turn a 3D graph at all.
+
+**Double-tap** to hide and show the bars, and each half works on its own: double-tap the
+graph to put its buttons away, double-tap the terminal to put the top bar away. The HUD
+readout stays either way — without it you are looking at an unlabelled cloud of dots.
+Double-tap rather than a single tap, because one tap picks a node or selects a row, and
+those are worth more than a toggle.
+
 Low stock shows amber, so a project that cannot be built right now is visible at a glance.
 
 ### Graph settings (`settings`)

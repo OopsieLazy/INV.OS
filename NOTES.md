@@ -3155,3 +3155,52 @@ revealing them. Calling a deliberately hidden element a regression is the test b
 wrong.
 
 17 load/layout checks, 138 UI, 55 settings, 24 demo.
+
+## v26.7 — the phone gets its own gestures
+
+### Two fingers
+
+A phone has no wheel and no second mouse button, so the only way to frame anything was
+`graph home` and hope. Pinch zooms, and two fingers dragged together pan — the same
+gesture does both, which is what the hand expects and what every map does.
+
+One finger stays on rotate. Stealing it for panning would leave no way to turn a 3D graph
+at all, which is most of the point of the view.
+
+Two details that would each have looked like a bug: whatever one finger was doing is
+cancelled the moment a second lands, or the scene lurches as the pinch starts; and lifting
+one finger of a pinch resets the gesture, or the remaining finger is read as the start of
+a new one.
+
+### The bars hide independently, the HUD does not
+
+Both bits of furniture now hide by double-tap, each in its own half of the screen —
+double-tap the graph to put its buttons away, double-tap the terminal to put the top bar
+away.
+
+The HUD frame is deliberately not part of it. It is the readout that says which view you
+are in and how many nodes are on screen; hiding it leaves an unlabelled cloud of dots.
+Only the buttons go.
+
+Double-tap rather than single, because one tap picks a node and one tap in the terminal
+selects a row. Those are the primary actions, and they are not worth breaking for a
+toggle. Rolled by hand rather than using `dblclick`, which is unreliable on mobile Safari
+and does not fire at all when the first tap lands on something that handles it.
+
+The shop name is dropped from the phone bar. It is the one thing there that is not a
+control, and the row is too narrow to carry both.
+
+### The prompt stays where your thumb is
+
+It sticks to the bottom of the terminal instead of scrolling away with the output. Two
+things fall out of that: the command line is always where you expect it, and you can
+scroll back up through a long listing to tap a shelf without losing the place you type.
+
+The keyboard is handled with `visualViewport`, which is the only thing that actually knows
+how much room is left once it is open.
+
+Verified on an iPhone 13 viewport: 17 layout checks, including that the HUD survives the
+toggles, that each half toggles only its own furniture, and that the prompt stays on
+screen while the output is scrolled back to the top.
+
+138 UI, 55 settings, 24 demo.

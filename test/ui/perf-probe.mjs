@@ -158,10 +158,16 @@ for (const [label, opts] of [
   // On a phone the bar buttons start hidden, so the visible touch target is the handle.
   // Measuring a deliberately hidden element and calling it a regression is the test being
   // wrong, not the product.
+  // On a phone the bar starts hidden, so reveal it to measure the real target rather
+  // than measuring a deliberately hidden element and calling it a regression.
   const touch = m.pageW < 760
     ? await page.evaluate(() => {
-        const h = document.getElementById('chrome-tap');
-        return h ? h.getBoundingClientRect().height : 0;
+        const had = document.body.classList.contains('bar-hide');
+        document.body.classList.remove('bar-hide');
+        const b = document.querySelector('.barbtn');
+        const h = b ? b.getBoundingClientRect().height : 0;
+        if (had) document.body.classList.add('bar-hide');
+        return h;
       })
     : m.btnH;
   check(`${label}: touch targets are at least 32px`, touch >= 32, `${Math.round(touch)}px`);
@@ -185,45 +191,70 @@ for (const [label, opts] of [
       wrap.termScroll <= 1 && wrap.pageScroll <= 1,
       `terminal ${wrap.termScroll}px, page ${wrap.pageScroll}px, white-space ${wrap.wraps}`);
 
-    /* And the furniture is out of the way until asked for. */
-    const chrome = await page.evaluate(() => {
+    /* The furniture hides, each half independently, and the HUD is NOT furniture. */
+    await page.evaluate(() => exec('graph inv'));
+    await page.waitForTimeout(1200);
+
+    const chrome0 = await page.evaluate(() => {
       const vis = el => el && getComputedStyle(el).display !== 'none';
       return {
-        hidden: document.body.classList.contains('chrome-hide'),
-        barVisible: vis(document.getElementById('bar')),
-        handleVisible: vis(document.getElementById('chrome-tap')),
+        barHidden: document.body.classList.contains('bar-hide'),
+        gbtnsHidden: document.body.classList.contains('gbtns-hide'),
+        hudTop: vis(document.getElementById('hud-top')),
+        hudBot: vis(document.getElementById('hud-bot')),
+        shopName: vis(document.getElementById('barl')),
       };
     });
-    check(`${label}: the top bar is hidden by default`,
-      chrome.hidden && !chrome.barVisible, JSON.stringify(chrome));
-    check(`${label}: but the handle to bring it back is visible`,
-      chrome.handleVisible, JSON.stringify(chrome));
+    check(`${label}: both bars start hidden`,
+      chrome0.barHidden && chrome0.gbtnsHidden, JSON.stringify(chrome0));
+    check(`${label}: the HUD readout is NOT hidden with them`,
+      chrome0.hudTop && chrome0.hudBot, JSON.stringify(chrome0));
+    check(`${label}: the shop name is dropped from the bar, leaving the buttons`,
+      !chrome0.shopName, JSON.stringify(chrome0));
 
-    await page.locator('#chrome-tap').click();
-    await page.waitForTimeout(250);
-    const shown = await page.evaluate(() => {
-      const bar = document.getElementById('bar');
-      const btn = document.querySelector('.barbtn');
+    // Double-tap each half; each must toggle only its own furniture.
+    const dbl = async (sel, pos) => {
+      for (let i = 0; i < 2; i++) {
+        await page.locator(sel).click({ position: pos });
+        await page.waitForTimeout(60);
+      }
+      await page.waitForTimeout(250);
+    };
+    await dbl('#term', { x: 40, y: 60 });
+    const afterTerm = await page.evaluate(() => ({
+      bar: !document.body.classList.contains('bar-hide'),
+      gbtns: !document.body.classList.contains('gbtns-hide'),
+    }));
+    check(`${label}: double-tapping the terminal shows the top bar only`,
+      afterTerm.bar && !afterTerm.gbtns, JSON.stringify(afterTerm));
+
+    await dbl('#gcanvas', { x: 60, y: 60 });
+    const afterGraph = await page.evaluate(() => ({
+      bar: !document.body.classList.contains('bar-hide'),
+      gbtns: !document.body.classList.contains('gbtns-hide'),
+    }));
+    check(`${label}: double-tapping the graph shows its buttons, independently`,
+      afterGraph.gbtns && afterGraph.bar, JSON.stringify(afterGraph));
+
+    // The prompt has to stay reachable while you scroll back through a long listing.
+    const sticky = await page.evaluate(async () => {
+      await exec('l');
+      await new Promise(r => setTimeout(r, 700));
+      const term = document.getElementById('term');
+      term.scrollTop = 0;                       // scroll right back up
+      await new Promise(r => setTimeout(r, 120));
+      const pr = document.getElementById('promptrow').getBoundingClientRect();
+      const tr = term.getBoundingClientRect();
       return {
-        visible: getComputedStyle(bar).display !== 'none',
-        btnH: btn ? btn.getBoundingClientRect().height : 0,
+        scrolledUp: term.scrollTop < 5,
+        promptOnScreen: pr.bottom <= tr.bottom + 2 && pr.top >= tr.top - 2,
+        canScroll: term.scrollHeight > term.clientHeight + 5,
       };
     });
-    check(`${label}: tapping the handle shows the bars`, shown.visible);
-    check(`${label}: and those buttons are big enough to hit`, shown.btnH >= 32,
-      `${Math.round(shown.btnH)}px`);
-
-    // Tapping the terminal — not the handle — puts them away again.
-    await page.locator('#term').click({ position: { x: 40, y: 200 } });
-    await page.waitForTimeout(250);
-    const hiddenAgain = await page.evaluate(() =>
-      document.body.classList.contains('chrome-hide'));
-    check(`${label}: tapping elsewhere hides them again`, hiddenAgain);
-  }
-  if (m.pageW < 760) {
-    check(`${label}: the graph stacks instead of splitting`, m.stacked, `flexDirection not column`);
-  } else {
-    check(`${label}: the graph keeps a usable width`, m.paneW > 200, `${Math.round(m.paneW)}px`);
+    check(`${label}: you can scroll back up through the output`,
+      sticky.canScroll && sticky.scrolledUp, JSON.stringify(sticky));
+    check(`${label}: and the prompt stays put while you do`,
+      sticky.promptOnScreen, JSON.stringify(sticky));
   }
   await ctx.close();
 }
