@@ -2511,9 +2511,16 @@ let screenNow = "";
 /* Screens that are a PAGE rather than terminal output take the whole phone display. Set
    here and cleared by exec(), so the next command — whatever it is — puts the graph back,
    and a command that re-renders this screen simply sets it again. */
-function markFullScreen(name){
-  screenNow = name || screenNow;
+function setScreen(name){
+  if (screenNow === name) return;
+  screenNow = name;
+  // Repaint the bar so the highlight follows. Only on a real change — this runs on every
+  // command, and rebuilding the bar for each one would be work for nothing.
   if (typeof updateBadge === "function") updateBadge();
+}
+
+function markFullScreen(name){
+  setScreen(name || screenNow);
   if (typeof document === "undefined") return;
   document.body.classList.add("screen-full");
   if (typeof gWake === "function") gWake();
@@ -3441,7 +3448,9 @@ async function exec(line){
      path — menu clicks, first-run doors and the tour all reach exec directly, and a
      setting that only resets for one of those is not reset at all. */
   if (typeof document !== "undefined") document.body.classList.remove("screen-full");
-  screenNow = "";
+  // Leaving a screen has to un-highlight its button, or the bar claims you are still on
+  // a page you have left. setScreen repaints; a screen that wants it takes it back below.
+  setScreen("");
   const t=line.trim(); if(!t) return;
   const [verb]=t.split(/\s+/);
   const rest=t.slice(verb.length).trim();
@@ -3763,6 +3772,7 @@ async function exec(line){
     }
 
     case "keys":
+      markFullScreen("keys");
       out.innerHTML=""; live.innerHTML=""; browseSel=-1;
       print("KEYS","w"); print("");
       print(
@@ -6245,6 +6255,10 @@ function gPick(px,py){
 }
 function setGraph(m){
   graphMode=m;
+  // The bar highlights the graph button while the graph is open, so it has to repaint
+  // when that changes — otherwise the button lights only if something else happens to
+  // redraw the bar afterwards.
+  if (typeof updateBadge === "function") setTimeout(updateBadge, 0);
   document.body.classList.toggle("g-split", m==="split");
   document.body.classList.toggle("g-full", m==="full");
   if (m==="off" && !gPopped()){ updateHud(); return; }   // gTick stops itself
@@ -7525,11 +7539,11 @@ function updateBadge(){
     barr.innerHTML = ``
       + (installPrompt ? `<span class="warnpill" id="pinst" title="install this app">⤓ install</span>` : ``)
       + (stale && !backupHandle ? `<span class="warnpill" id="pbak" title="last backup is old">⁂ backup</span>` : ``)
-      + (!lastSaveOk ? `<span class="warnpill" id="phealth" title="save failed — open health">⚠ save</span>` : ``)
+      + (!lastSaveOk ? `<span class="warnpill${screenNow==="health"?" on":""}" id="phealth" title="save failed — open health">⚠ save</span>` : ``)
       + (n ? `<span class="warnpill" id="pdoc" title="doctor report (F2)">▲ ${n}</span>` : ``)
       + (updateReady ? `<span class="warnpill" id="pupd" title="the server is running a newer build — click to reload">⟳ update</span>` : ``)
-      + (lanOn ? `<span class="warnpill" id="plan" title="shop access is ON — other devices can reach this inventory">◉ shop</span>` : ``)
-      + `<span class="barbtn" id="pgraph" title="node graph (F3)">graph</span>`
+      + (lanOn ? `<span class="warnpill${screenNow==="server"?" on":""}" id="plan" title="shop access is ON — other devices can reach this inventory">◉ shop</span>` : ``)
+      + `<span class="barbtn${graphMode!=="off"?" on":""}" id="pgraph" title="node graph (F3)">graph</span>`
       + `<span class="barbtn${screenNow==="theme"?" on":""}" id="ptheme" title="theme &amp; display">theme</span>`
       + `<span class="barbtn${screenNow==="settings"?" on":""}" id="pset" title="settings">settings</span>`
       + `<span class="barbtn${screenNow==="help"?" on":""}" id="phelp" title="commands (F1)">help</span>`;
@@ -7540,7 +7554,6 @@ barr.addEventListener("click", async e=>{
   const id=e.target.closest("[id]")?.id;
   if (id==="pinst")  return void await run("install");
   if (id==="pbak")   return void await run("backup");
-  if (id==="ptheme") return void await run("theme");
   /* A bar button you are ALREADY on takes you back, rather than redrawing the screen
      you are looking at. On a phone that was the only thing missing: `theme`, `settings`
      and `help` all fill the display and there was no way back to what you were doing
@@ -7552,7 +7565,7 @@ barr.addEventListener("click", async e=>{
   };
   if (id==="pupd")   return void location.reload();
   if (id==="plan")   return void await backIf("server", "server");
-  if (id==="pgraph") return void await run("graph 3d");
+  if (id==="pgraph") return void await run(graphMode!=="off" ? "graph off" : "graph 3d");
   if (id==="pset")   return void await backIf("settings", "settings");
   if (id==="phelp")  return void await backIf("help", "help");
   if (id==="phealth")return void await backIf("health", "health");
