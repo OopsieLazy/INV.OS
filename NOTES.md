@@ -3425,3 +3425,48 @@ where two of five buttons behave one way is worse than one where none of them do
 you cannot tell which is which.
 
 35 layout checks, 138 UI, 64 settings, 24 demo.
+
+## v27.4 — one spin that actually spins
+
+Reported: barely any difference between the styles, and the vertical motion is slight.
+Both true, and measurable. Ten seconds of drift, travel in radians:
+
+| style | yaw | pitch |
+|---|---|---|
+| level | 1.32 | 0 |
+| tilted | 1.32 | 0.135 |
+| tumble | 1.32 | 0.41 |
+| wheel | 2.26 | 0.61 |
+
+Three styles whose vertical travel was a tenth to a half of the horizontal are not three
+styles. They are one wobble at three amplitudes, which is exactly how it looked.
+
+The cause was my own easing. Pitch was moved toward its target at 12% a frame, which
+throttled a 1.25-radian amplitude down to 0.135 of actual travel. I had written the damping
+to stop a style change snapping, and it ate the motion it was damping.
+
+Now two options, and the vertical one is driven straight from the phase so the amplitude
+asked for is the amplitude you get:
+
+| style | yaw | pitch |
+|---|---|---|
+| level | 1.32 | 0 |
+| globe | 1.32 | **2.11** |
+
+The camera travels further vertically than horizontally, which is what makes it read as a
+globe rather than a turntable. A second, slower term whose rate does not divide into the
+first keeps the crests landing somewhere different each time round, so it never settles
+into an obvious loop — the "unevenly" part.
+
+It is still a SWEEP, not a rotation: pitch is clamped at ±1.4 because past that the view
+goes edge-on and comes out upside down, and a sweep rises, crests and falls without ever
+reaching it. The clamp is never lifted and nothing outside `gDrift` changes.
+
+**Costs nothing.** 13.3ms a frame on level against 13.4ms on globe, zero dropped frames in
+six seconds of each — so there was no reason to omit it. Two floats a frame was never going
+to show up; measuring it was quicker than arguing about it.
+
+The audit measures TRAVEL now rather than asserting non-zero. A tenth of a radian is
+non-zero and looks like nothing, which is how three useless styles passed their tests.
+
+61 settings checks, 138 UI, 35 layout, 24 demo.

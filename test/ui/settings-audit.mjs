@@ -402,43 +402,49 @@ check('the drift rate is the same whichever axis it was left on',
 await run('cfgreset');
 
 // ── spin styles ─────────────────────────────────────────────────────────────
-/* Level is the original and stays the default: yaw only. The others add a vertical
-   sweep, so the scene turns in two directions at once. The sweep must never reach the
-   pitch clamp — past +-1.4 the view goes through edge-on and comes out upside down. */
+/* Two styles, because the four I tried first were not four things: measured over ten
+   seconds they moved the camera vertically by 0.135, 0.41 and 0.61 radians against 1.3
+   horizontally, so all three read as the same slight wobble on a turntable.
+
+   Globe has to be VISIBLY vertical, which means measuring the travel rather than
+   asserting it is non-zero — a tenth of a radian is non-zero and looks like nothing. And
+   it must never reach the pitch clamp: past +-1.4 the view goes edge-on and comes out
+   upside down. */
 await run('graph off');
 await run('cfgreset');
 await run('graph inv');
 await run('graph 3d');
 await page.waitForTimeout(800);
 
-async function sample(style) {
-  return await page.evaluate(async s => {
+async function sample(style, ms) {
+  return await page.evaluate(async ([s, dur]) => {
     setCfg('spinStyle', s);
     gAutoRot = true; gHoming = false;
     const yaw = [], pitch = [];
-    for (let i = 0; i < 90; i++) {
+    const t0 = performance.now();
+    while (performance.now() - t0 < dur) {
       yaw.push(gYaw); pitch.push(gPitch);
       await new Promise(r => requestAnimationFrame(r));
     }
     const span = a => Math.max(...a) - Math.min(...a);
     return { yaw: span(yaw), pitch: span(pitch),
              maxPitch: Math.max(...pitch.map(Math.abs)) };
-  }, style);
+  }, [style, ms]);
 }
 
-const levelSpin = await sample(0);
+const levelSpin = await sample(0, 2500);
 check('level spin turns on one axis only, as it always did',
   levelSpin.yaw > 1e-4 && levelSpin.pitch < 1e-3,
   `yaw ${levelSpin.yaw.toFixed(4)}, pitch ${levelSpin.pitch.toFixed(4)}`);
 
-for (const [name, style] of [['tilted', 1], ['tumble', 2], ['wheel', 3]]) {
-  const r = await sample(style);
-  check(`${name} spin turns in two directions at once`,
-    r.yaw > 1e-4 && r.pitch > 1e-3,
-    `yaw ${r.yaw.toFixed(4)}, pitch ${r.pitch.toFixed(4)}`);
-  check(`${name} spin never reaches the pitch limit`,
-    r.maxPitch < 1.4, `max |pitch| ${r.maxPitch.toFixed(3)}`);
-}
+const globe = await sample(1, 8000);
+check('globe spin moves vertically as much as horizontally',
+  globe.pitch > globe.yaw,
+  `pitch ${globe.pitch.toFixed(3)} vs yaw ${globe.yaw.toFixed(3)} over 8s`);
+check('globe spin is visibly vertical, not a wobble',
+  globe.pitch > 1.0, `pitch travel ${globe.pitch.toFixed(3)} rad`);
+check('globe spin never reaches the pitch limit',
+  globe.maxPitch < 1.4, `max |pitch| ${globe.maxPitch.toFixed(3)}`);
 await page.evaluate(() => setCfg('spinStyle', 0));
 
 // ── the camera must not lurch on its own ────────────────────────────────────
