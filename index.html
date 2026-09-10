@@ -240,8 +240,47 @@
     #cmd{ font-size:16px }
   }
 
-  /* Narrow: stack the graph above the terminal instead of beside it. Side by side,
-     both halves are too narrow to be worth having. */
+  /* The handle exists only on a phone; the media query below turns it on. Declared
+     first on purpose — a base rule written after the query wins on equal specificity and
+     silently hides the control. */
+  #chrome-tap{ display:none }
+
+  /* ── phone: one direction of travel, and no permanent chrome ─────────────
+     Two rules for a phone. You should only ever scroll DOWN, and the screen should be
+     the app rather than the app's furniture. */
+  @media (max-width: 760px){
+    /* The terminal is pre-formatted text, which on a phone means every long line drags
+       the whole view sideways. Wrapping loses the column alignment of the wider
+       listings — but that alignment is already lost at 390px, and a screen you have to
+       scan in two directions to read is worse than one with ragged columns. */
+    .line{
+      white-space:pre-wrap;
+      overflow-wrap:anywhere;
+      word-break:break-word;
+    }
+    #term{ overflow-x:hidden }
+    /* A little smaller, so more of a line survives before it wraps. */
+    body{ font-size:12px }
+    #cmd{ font-size:16px }          /* except the input: under 16px and iOS zooms */
+
+    /* The top bar and the graph's own buttons are hidden until asked for. On a phone
+       they cost two rows of a short screen and are wanted for a few seconds at a time.
+       #chrome-tap is the handle; tapping anywhere else puts them away again. */
+    body.chrome-hide #bar{ display:none }
+    body.chrome-hide #gbtns{ display:none }
+    body.chrome-hide #hud-top, body.chrome-hide #hud-bot{ display:none }
+    #chrome-tap{
+      display:flex; align-items:center; justify-content:center;
+      position:fixed; top:max(4px, env(safe-area-inset-top)); right:8px; z-index:60;
+      width:34px; height:34px; border-radius:8px;
+      border:1px solid rgba(97,214,214,.28); color:var(--cyan);
+      background:rgba(12,12,12,.72); backdrop-filter:blur(2px);
+      font-size:15px; line-height:1; user-select:none; cursor:pointer;
+    }
+    body:not(.chrome-hide) #chrome-tap{ background:rgba(97,214,214,.16) }
+  }
+
+
   @media (max-width: 760px){
     #main{ flex-direction:column }
     body.g-split #graphpane{
@@ -276,6 +315,7 @@
 </head>
 <body>
 
+<div id="chrome-tap" role="button" aria-label="show or hide the bars" title="show/hide the bars">⋯</div>
 <div id="bar"><span id="barl"><b>INVENTORY</b></span><span id="barr"></span></div>
 <div id="main">
 <div id="term">
@@ -4726,6 +4766,45 @@ let gDriftT = 0;              // timestamp of the last drift step, for time-base
 const gc=$("gcanvas"), gpane=$("graphpane");
 
 let hudOn=true, sweepT=0;   // HUD frame + boot-sweep animation clock
+
+/* ── phone chrome ────────────────────────────────────────────────────────────
+   On a phone the title bar and the graph's buttons are hidden until asked for. They are
+   wanted for a few seconds at a time and they cost two rows of an already short screen.
+
+   The handle stays visible, because a control you have to know about is not a control.
+   Tapping it shows the bars; tapping anywhere else puts them away — which is the part
+   that matters, since the whole point is that they are not there while you work. */
+const PHONE_Q = "(max-width: 760px)";
+function isPhone(){ return matchMedia(PHONE_Q).matches; }
+
+function setChrome(show){
+  document.body.classList.toggle("chrome-hide", !show);
+  // The pane changes height when the bars come and go. gDraw re-measures every frame,
+  // so waking it is all that is needed — but it does have to be woken, or the canvas
+  // keeps the old size until something else happens to ask for a frame.
+  if (typeof gWake === "function") gWake();
+}
+
+function initPhoneChrome(){
+  const tap = document.getElementById("chrome-tap");
+  if (!tap) return;
+  const apply = () => setChrome(!isPhone());
+  apply();
+  matchMedia(PHONE_Q).addEventListener("change", apply);
+
+  tap.addEventListener("click", e => {
+    e.stopPropagation();
+    setChrome(document.body.classList.contains("chrome-hide"));
+  });
+
+  // Anywhere else puts them away. Capture phase, so it still fires for taps on the
+  // canvas and on terminal rows, which stop propagation of their own.
+  document.addEventListener("pointerdown", e => {
+    if (!isPhone() || document.body.classList.contains("chrome-hide")) return;
+    if (e.target.closest("#chrome-tap") || e.target.closest("#bar") || e.target.closest("#gbtns")) return;
+    setChrome(false);
+  }, true);
+}
 // tunable settings (persisted in state.cfg) with metadata for the settings screen
 const SETTINGS = [
   {k:"launchZoom", label:"launch framing", min:0.5, max:3,   step:0.1,  def:1,
@@ -7196,6 +7275,8 @@ barr.addEventListener("click", async e=>{
   if (id==="pdoc" || issueMarks.size) await run("doctor");
   cmd.focus();
 });
+
+initPhoneChrome();
 
 load().then(async ()=>{
   applyTheme(state.theme||"campbell"); hudOn=state.hud!==false; gCores=state.cores!==false;
