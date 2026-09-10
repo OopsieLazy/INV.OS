@@ -74,6 +74,11 @@
     border-radius:3px; padding:1px 7px; cursor:pointer; user-select:none; background:rgba(12,12,12,.55);
   }
   #gbtns span:hover{ background:rgba(97,214,214,.14); }
+  /* The button you are currently on. Pressing it again goes back, so it has to look
+     pressed — otherwise "tap it again" is a rule nobody can see. */
+  .barbtn.on{
+    background:rgba(97,214,214,.18); border-color:rgba(97,214,214,.6); color:#eaffff;
+  }
   /* HUD off: hide the frame chrome, keep only the bottom hint */
   body:not(.hud-on) #hud .hc,
   body:not(.hud-on) #hud-top,
@@ -2498,17 +2503,24 @@ function applyCfg(changedKey){
   if (graphMode!=="off") gAlpha=Math.max(gAlpha,0.05);
 }
 
+/* Which full-screen page is showing, or "" for ordinary terminal output. Used for two
+   things: the bar highlights the button you are on, and pressing that button again takes
+   you back instead of redrawing what you are already looking at. */
+let screenNow = "";
+
 /* Screens that are a PAGE rather than terminal output take the whole phone display. Set
-   here and cleared by run(), so the next command — whatever it is — puts the graph back,
+   here and cleared by exec(), so the next command — whatever it is — puts the graph back,
    and a command that re-renders this screen simply sets it again. */
-function markFullScreen(){
+function markFullScreen(name){
+  screenNow = name || screenNow;
+  if (typeof updateBadge === "function") updateBadge();
   if (typeof document === "undefined") return;
   document.body.classList.add("screen-full");
   if (typeof gWake === "function") gWake();
 }
 
 function renderSettings(focusKey){
-  markFullScreen();
+  markFullScreen("settings");
   atHome=false; menuOpen=false;
   out.innerHTML=""; live.innerHTML=""; browseSel=-1;
   print("SETTINGS","w"); print("");
@@ -3429,6 +3441,7 @@ async function exec(line){
      path — menu clicks, first-run doors and the tour all reach exec directly, and a
      setting that only resets for one of those is not reset at all. */
   if (typeof document !== "undefined") document.body.classList.remove("screen-full");
+  screenNow = "";
   const t=line.trim(); if(!t) return;
   const [verb]=t.split(/\s+/);
   const rest=t.slice(verb.length).trim();
@@ -3449,9 +3462,10 @@ async function exec(line){
   }
 
   switch(v){
-    case "help": case "?": case "menu": menu(rest); return;
+    case "help": case "?": case "menu": markFullScreen("help"); menu(rest); return;
 
     case "health": case "status": {
+      markFullScreen("health");
       out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
       print("DATA HEALTH","w"); print("");
       const primary = openEnvelope(await store.get(KEY));
@@ -3634,6 +3648,7 @@ async function exec(line){
     }
 
     case "server": {
+      markFullScreen("server");
       out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
       print("SERVER","w"); print("");
       let info=null;
@@ -3716,6 +3731,7 @@ async function exec(line){
     }
 
     case "theme": {
+      markFullScreen("theme");
       const a=rest.trim().toLowerCase();
       if (!a){
         out.innerHTML=""; live.innerHTML=""; browseSel=-1; atHome=false;
@@ -5013,6 +5029,11 @@ const SETTINGS = [
      on a desktop and a column on a phone: "first" is left on one and above on the other. */
   {k:"graphFirst", label:"graph position", min:0,   max:1,   step:1,    def:0,
     fmt:v=>v?"above / left of the terminal":"below / right of the terminal"},
+  /* How the idle drift moves. Level is the original and stays the default; the others
+     add a vertical component so the scene turns in more than one direction at once.
+     Purely a change to how gDrift advances the camera — nothing else knows about it. */
+  {k:"spinStyle",  label:"spin style",     min:0,   max:3,   step:1,    def:0,
+    fmt:v=>["level","tilted","tumble","wheel"][v]||"level"},
 ];
 function cfg(k){ const m=SETTINGS.find(s=>s.k===k); return (state.cfg&&state.cfg[k]!==undefined)?state.cfg[k]:m.def; }
 function setCfg(k,v){ const m=SETTINGS.find(s=>s.k===k);
@@ -5360,6 +5381,10 @@ function gSpinNote(dx, dy){
    The step is capped at three frames' worth. After a tab has been in the background for
    a minute the elapsed time is enormous, and without the cap the scene would snap round
    to wherever it "should" be the instant you came back. */
+/* Phase for the multi-axis spins, advanced in seconds so every style runs at the same
+   rate on any refresh rate. Kept outside gDrift so a style change does not jump. */
+let gSpinPhase = 0;
+
 function gDrift(){
   const sp = cfg("driftSpeed");
   if (!sp) return;
@@ -5399,6 +5424,35 @@ function gDrift(){
   const f = gSpinFade*gSpinFade*(3 - 2*gSpinFade);
 
   gYaw += sp*ax*k*f;
+
+  /* ── spin styles ─────────────────────────────────────────────────────────────
+     Level is the original: yaw only, and it is still the default. The rest add a
+     vertical sweep so the scene turns in two directions at once, which is what makes
+     it read as a thing tumbling in space rather than a picture on a turntable.
+
+     The sweep is a SINE between the pitch limits, not a rotation through them. Pitch is
+     clamped at +-1.4 because past that the view goes through edge-on and comes out
+     upside down; sweeping means the camera rises, crests and falls without ever hitting
+     that, and it never has to be unclamped — so nothing outside this function changes.
+
+     Yaw and the sweep run at rates that do not divide into each other, so the motion
+     does not repeat on a short loop and never quite comes back to where it was. */
+  const style = cfg("spinStyle")|0;
+  if (style > 0){
+    gSpinPhase += (dt/1000) * sp * (style === 3 ? 26 : 14);
+    const amp   = style === 1 ? 0.45 : style === 2 ? 0.95 : 1.25;
+    const want  = PITCH_HOME + Math.sin(gSpinPhase) * amp;
+    // Eased rather than assigned, so switching style mid-spin slides into the new shape
+    // instead of snapping to it.
+    gPitch += (Math.max(-1.4, Math.min(1.4, want)) - gPitch) * Math.min(1, k*0.12);
+    if (style === 3){
+      // The wheel: yaw speeds up as the camera crests and slows at the bottom, so the
+      // whole scene rolls rather than spinning flat.
+      gYaw += sp*k*f*Math.cos(gSpinPhase*0.5)*0.8;
+    }
+    return;                                   // the sweep owns pitch in these styles
+  }
+
   if (ay){
     /* Fade the vertical component out as the tilt runs out of room, rather than
        reversing at the stop. A bounce is an instant change of direction — the jankiest
@@ -7476,9 +7530,9 @@ function updateBadge(){
       + (updateReady ? `<span class="warnpill" id="pupd" title="the server is running a newer build — click to reload">⟳ update</span>` : ``)
       + (lanOn ? `<span class="warnpill" id="plan" title="shop access is ON — other devices can reach this inventory">◉ shop</span>` : ``)
       + `<span class="barbtn" id="pgraph" title="node graph (F3)">graph</span>`
-      + `<span class="barbtn" id="ptheme" title="theme &amp; display">theme</span>`
-      + `<span class="barbtn" id="pset" title="settings">settings</span>`
-      + `<span class="barbtn" id="phelp" title="commands (F1)">help</span>`;
+      + `<span class="barbtn${screenNow==="theme"?" on":""}" id="ptheme" title="theme &amp; display">theme</span>`
+      + `<span class="barbtn${screenNow==="settings"?" on":""}" id="pset" title="settings">settings</span>`
+      + `<span class="barbtn${screenNow==="help"?" on":""}" id="phelp" title="commands (F1)">help</span>`;
   }catch(e){}
 }
 barr.addEventListener("click", async e=>{
@@ -7487,12 +7541,22 @@ barr.addEventListener("click", async e=>{
   if (id==="pinst")  return void await run("install");
   if (id==="pbak")   return void await run("backup");
   if (id==="ptheme") return void await run("theme");
+  /* A bar button you are ALREADY on takes you back, rather than redrawing the screen
+     you are looking at. On a phone that was the only thing missing: `theme`, `settings`
+     and `help` all fill the display and there was no way back to what you were doing
+     short of typing. The button that got you there is the obvious way out, and it is
+     already under your thumb. */
+  const backIf = async (screen, cmdText) => {
+    if (screenNow === screen){ await run("home"); return; }
+    await run(cmdText);
+  };
   if (id==="pupd")   return void location.reload();
-  if (id==="plan")   return void await run("server");
+  if (id==="plan")   return void await backIf("server", "server");
   if (id==="pgraph") return void await run("graph 3d");
-  if (id==="pset")   return void await run("settings");
-  if (id==="phelp")  return void await run("help");
-  if (id==="phealth")return void await run("health");
+  if (id==="pset")   return void await backIf("settings", "settings");
+  if (id==="phelp")  return void await backIf("help", "help");
+  if (id==="phealth")return void await backIf("health", "health");
+  if (id==="ptheme") return void await backIf("theme", "theme");
   if (id==="pdoc" || issueMarks.size) await run("doctor");
   cmd.focus();
 });
