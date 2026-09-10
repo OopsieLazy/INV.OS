@@ -155,7 +155,71 @@ for (const [label, opts] of [
   check(`${label}: the page does not scroll sideways`, m.hScroll <= 1, `overflow ${m.hScroll}px`);
   check(`${label}: the command input is 16px+ (iOS does not zoom the page)`,
     m.inputPx >= 16, `${m.inputPx}px`);
-  check(`${label}: touch targets are at least 32px`, m.btnH >= 32, `${Math.round(m.btnH)}px`);
+  // On a phone the bar buttons start hidden, so the visible touch target is the handle.
+  // Measuring a deliberately hidden element and calling it a regression is the test being
+  // wrong, not the product.
+  const touch = m.pageW < 760
+    ? await page.evaluate(() => {
+        const h = document.getElementById('chrome-tap');
+        return h ? h.getBoundingClientRect().height : 0;
+      })
+    : m.btnH;
+  check(`${label}: touch targets are at least 32px`, touch >= 32, `${Math.round(touch)}px`);
+
+  if (m.pageW < 760) {
+    /* On a phone you should only ever scroll DOWN. Pre-formatted terminal lines drag the
+       view sideways otherwise, and a screen you have to scan in two directions to read is
+       worse than one with ragged columns. */
+    const wrap = await page.evaluate(async () => {
+      await exec('l');
+      await new Promise(r => setTimeout(r, 600));
+      const term = document.getElementById('term');
+      const line = document.querySelector('#out .line');
+      return {
+        termScroll: term.scrollWidth - term.clientWidth,
+        pageScroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        wraps: line ? getComputedStyle(line).whiteSpace : 'none',
+      };
+    });
+    check(`${label}: a long listing does not scroll sideways`,
+      wrap.termScroll <= 1 && wrap.pageScroll <= 1,
+      `terminal ${wrap.termScroll}px, page ${wrap.pageScroll}px, white-space ${wrap.wraps}`);
+
+    /* And the furniture is out of the way until asked for. */
+    const chrome = await page.evaluate(() => {
+      const vis = el => el && getComputedStyle(el).display !== 'none';
+      return {
+        hidden: document.body.classList.contains('chrome-hide'),
+        barVisible: vis(document.getElementById('bar')),
+        handleVisible: vis(document.getElementById('chrome-tap')),
+      };
+    });
+    check(`${label}: the top bar is hidden by default`,
+      chrome.hidden && !chrome.barVisible, JSON.stringify(chrome));
+    check(`${label}: but the handle to bring it back is visible`,
+      chrome.handleVisible, JSON.stringify(chrome));
+
+    await page.locator('#chrome-tap').click();
+    await page.waitForTimeout(250);
+    const shown = await page.evaluate(() => {
+      const bar = document.getElementById('bar');
+      const btn = document.querySelector('.barbtn');
+      return {
+        visible: getComputedStyle(bar).display !== 'none',
+        btnH: btn ? btn.getBoundingClientRect().height : 0,
+      };
+    });
+    check(`${label}: tapping the handle shows the bars`, shown.visible);
+    check(`${label}: and those buttons are big enough to hit`, shown.btnH >= 32,
+      `${Math.round(shown.btnH)}px`);
+
+    // Tapping the terminal — not the handle — puts them away again.
+    await page.locator('#term').click({ position: { x: 40, y: 200 } });
+    await page.waitForTimeout(250);
+    const hiddenAgain = await page.evaluate(() =>
+      document.body.classList.contains('chrome-hide'));
+    check(`${label}: tapping elsewhere hides them again`, hiddenAgain);
+  }
   if (m.pageW < 760) {
     check(`${label}: the graph stacks instead of splitting`, m.stacked, `flexDirection not column`);
   } else {

@@ -3117,3 +3117,41 @@ from the HTML app, the numbers, what is knowingly still broken, and what the tag
 NOTES.md stays the long version.
 
 138 UI, 55 settings, 31 security, 24 demo, 11 injection, 31 store.
+
+## v26.6 — the phone only scrolls one way, and the furniture gets out of the way
+
+### One direction of travel
+
+The terminal is pre-formatted text, so on a phone every long line dragged the whole view
+sideways and you had to scan in two directions to read anything. Lines wrap below 760px
+now, the terminal will not scroll horizontally at all, and the body drops to 12px so more
+of a line survives before it wraps. The command input stays at 16px — under that, iOS
+zooms the page on focus and the zoom never fully undoes.
+
+Wrapping does cost the column alignment of the wider listings. That alignment was already
+gone at 390px, and a screen you have to read in two directions is worse than one with
+ragged columns.
+
+### The bars hide
+
+On a phone the title bar and the graph's buttons cost two rows of an already short screen,
+and they are wanted for a few seconds at a time. They start hidden. A small handle in the
+corner brings them back; tapping anywhere else puts them away, which is the half that
+matters — the point is that they are not there while you work.
+
+The handle itself stays visible, because a control you have to already know about is not a
+control.
+
+One thing that took a second attempt: the base `#chrome-tap{display:none}` was written
+AFTER the media query that turns it on. Equal specificity, so the later rule won and the
+handle was invisible everywhere — the control existed and could never be reached. It is
+declared before the query now.
+
+### The test was wrong before the product was
+
+The touch-target check failed at 0px after this, because it measured a `.barbtn` that is
+now deliberately hidden. It measures the handle on a phone, and the bar buttons after
+revealing them. Calling a deliberately hidden element a regression is the test being
+wrong.
+
+17 load/layout checks, 138 UI, 55 settings, 24 demo.
