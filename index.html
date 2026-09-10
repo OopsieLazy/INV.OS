@@ -38,7 +38,15 @@
     --mono:"Cascadia Mono","Consolas","JetBrains Mono","SF Mono","Menlo","DejaVu Sans Mono",monospace;
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  html,body{height:100%}
+  /* --vh is the height the app actually has. On a phone that is NOT 100% once the
+     keyboard is open: the layout viewport keeps its full height and the keyboard simply
+     covers the bottom of it, so a full-height flex column puts the prompt behind the
+     keyboard and the browser scrolls the page to chase it. That scroll is the "big empty
+     space" — the page itself moves, and the terminal's own scrollback becomes
+     unreachable. visualViewport is the only thing that knows the real number; see
+     initKeyboardScroll. */
+  html{height:100%}
+  body{height:var(--vh, 100%)}
   body{
     background:var(--bg); color:var(--green);
     font-family:var(--mono); font-size:14px; line-height:1.5;
@@ -48,6 +56,7 @@
     .blink{animation:none !important; opacity:1 !important}
   }
   #main{flex:1; display:flex; min-height:0; position:relative}
+  body.graph-first #graphpane{ order:-1; border-left:none; border-right:1px solid #2a2a2a }
   #graphpane{
     display:none; position:relative; background:#0c0c0c;
     border-left:1px solid #2a2a2a; overflow:hidden;
@@ -259,8 +268,11 @@
       word-break:break-word;
     }
     #term{ overflow-x:hidden }
-    /* A little smaller, so more of a line survives before it wraps. */
-    body{ font-size:12px }
+    /* Scale the terminal text to the screen, so a shelf tree fits on one line instead
+       of wrapping. At 390px this lands near 11px — about 59 characters, which is what
+       the section and map listings need. The bars keep their own size: shrinking a
+       button to fit text is how you get a control nobody can hit. */
+    #term{ font-size:clamp(10px, 2.95vw, 13px) }
     #cmd{ font-size:16px }          /* except the input: under 16px and iOS zooms */
 
     /* Two bits of furniture, hidden independently, each by a double-tap in its own
@@ -270,7 +282,22 @@
        view you are in and how many nodes are on screen, and hiding it leaves an
        unlabelled cloud of dots. Only the buttons go. */
     body.bar-hide #bar{ display:none }
-    body.gbtns-hide #gbtns{ display:none }
+
+    /* The graph buttons stack down the right edge rather than across the top. A phone is
+       tall and narrow: a horizontal row of five buttons eats the width the graph needs,
+       a vertical one eats a strip of the height it has plenty of.
+
+       They FADE rather than disappearing, because a single tap toggles them and things
+       that blink in and out on tap feel broken. Pointer-events go with the opacity so a
+       hidden strip cannot swallow a drag that starts near the edge. */
+    #gbtns{
+      top:50%; right:6px; transform:translateY(-50%);
+      flex-direction:column; gap:8px;
+      transition:opacity .18s ease;
+    }
+    body:not(.hud-on) #gbtns{ top:50%; right:6px; }
+    #gbtns span{ font-size:12px; padding:7px 9px; text-align:center; }
+    body.gbtns-hide #gbtns{ opacity:0; pointer-events:none }
 
     /* The shop name is the one thing on the bar that is not a control, and on a phone
        the row is too narrow to carry both. The buttons win. */
@@ -281,6 +308,9 @@
 
   @media (max-width: 760px){
     #main{ flex-direction:column }
+    /* graph-first swaps the two panes. On a phone that is graph above terminal; on a
+       desktop the same class puts the graph on the left. One setting, both meanings. */
+    body.graph-first #graphpane{ order:-1 }
     body.g-split #graphpane{
       width:auto; height:42vh; flex-shrink:0;
       border-left:none; border-bottom:1px solid #1e1e1e;
@@ -302,9 +332,11 @@
        the output. Two things fall out of that, and both were asked for: the command line
        is always where your thumb expects it, and you can scroll back up through a long
        listing to tap a shelf without losing the place you type. */
+    /* Sticky so it is always reachable while you scroll back through a listing. NOT
+       margin-top:auto — that pushed it to the bottom of an empty terminal and left a gap
+       above it, which is the opposite of using the space well. */
     #promptrow{
       position:sticky; bottom:0; z-index:2;
-      margin-top:auto;                 /* sits at the bottom when the output is short */
       padding-top:4px;
       padding-bottom:env(safe-area-inset-bottom, 0);
       background:var(--bg);
@@ -2418,6 +2450,7 @@ function applyCfg(changedKey){
   if (changedKey==="launchZoom" && graphMode!=="off"){ gUserAdjusted=false; gZoomRel=0; gScale=gFitScale(); }
   // a different node budget means a different graph
   if (changedKey==="graphNodes"){ graphItemsLoaded=false; graphSync(); }
+  document.body.classList.toggle("graph-first", !!cfg("graphFirst"));
   /* Orbit size is baked into each node's radius when the orbits are captured, so it can
      only take effect by capturing them again. That is safe to do live: the re-capture
      resets the blend, and the blend is what walks each node from where it is now onto
@@ -4808,12 +4841,30 @@ function initKeyboardScroll(){
   const cmd = document.getElementById("cmd");
   if (!term || !cmd) return;
   const toBottom = () => { term.scrollTop = term.scrollHeight; };
-  cmd.addEventListener("focus", () => setTimeout(toBottom, 250));
+
+  /* Size the app to the space the keyboard leaves, rather than letting the page scroll
+     to chase the input. Without this the layout stays full height, the keyboard covers
+     the bottom of it, and the browser scrolls the whole document — which opens a gap
+     above and takes the terminal's own scrollback out of reach. */
+  const fit = () => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    document.documentElement.style.setProperty("--vh", vv.height + "px");
+    // Undo any scrolling the browser already did to chase the caret.
+    window.scrollTo(0, 0);
+    if (typeof gWake === "function") gWake();
+  };
+
   if (window.visualViewport){
     visualViewport.addEventListener("resize", () => {
+      fit();
       if (document.activeElement === cmd) setTimeout(toBottom, 60);
     });
+    visualViewport.addEventListener("scroll", () => window.scrollTo(0, 0));
+    fit();
   }
+  cmd.addEventListener("focus", () => { fit(); setTimeout(toBottom, 250); });
+  cmd.addEventListener("blur", () => setTimeout(fit, 120));
 }
 
 function initPhoneChrome(){
@@ -4826,23 +4877,25 @@ function initPhoneChrome(){
   apply();
   matchMedia(PHONE_Q).addEventListener("change", apply);
 
-  /* Rolled by hand rather than using dblclick, which fires unreliably on mobile Safari
+  /* The TERMINAL keeps double-tap. The graph does not: a tap there is already known to
+     be a tap and not a drag, because the canvas tracks whether the gesture moved, so a
+     single tap is safe and reads better. The terminal has no such signal and its rows are
+     dense, so a single tap would fire while somebody is trying to select one.
+
+     Rolled by hand rather than using dblclick, which fires unreliably on mobile Safari
      and does not fire at all when the first tap lands on something that handles it. */
-  let lastTap = 0, lastZone = "";
+  let lastTap = 0;
   document.addEventListener("pointerup", e => {
     if (!isPhone()) return;
     if (e.target.closest("#bar") || e.target.closest("#gbtns")) return;  // real controls
-    const zone = e.target.closest("#graphpane") ? "gbtns"
-               : e.target.closest("#term") ? "bar" : "";
-    if (!zone) return;
+    if (!e.target.closest("#term")) return;
     const now = performance.now();
-    if (zone === lastZone && now - lastTap < 400){
-      const cls = zone === "bar" ? "bar-hide" : "gbtns-hide";
-      setChrome(zone, document.body.classList.contains(cls));
-      lastTap = 0; lastZone = "";
+    if (now - lastTap < 400){
+      setChrome("bar", document.body.classList.contains("bar-hide"));
+      lastTap = 0;
       return;
     }
-    lastTap = now; lastZone = zone;
+    lastTap = now;
   }, true);
 }
 // tunable settings (persisted in state.cfg) with metadata for the settings screen
@@ -4885,11 +4938,23 @@ const SETTINGS = [
   // simulation stops once it settles, but the drift and the redraw never do. On a shop
   // tablet that is battery burned on a picture that is not changing.
   {k:"idleStop",   label:"pause when idle", min:0,  max:1,   step:1,    def:1,    fmt:v=>v?"on":"off"},
+  /* Which side the graph sits on. One setting, two meanings, because the layout is a row
+     on a desktop and a column on a phone: "first" is left on one and above on the other. */
+  {k:"graphFirst", label:"graph position", min:0,   max:1,   step:1,    def:0,
+    fmt:v=>v?"above / left of the terminal":"below / right of the terminal"},
 ];
 function cfg(k){ const m=SETTINGS.find(s=>s.k===k); return (state.cfg&&state.cfg[k]!==undefined)?state.cfg[k]:m.def; }
 function setCfg(k,v){ const m=SETTINGS.find(s=>s.k===k);
   v=Math.max(m.min,Math.min(m.max,Math.round(v/m.step)*m.step));
-  state.cfg=state.cfg||{}; state.cfg[k]=v; return v; }
+  state.cfg=state.cfg||{}; state.cfg[k]=v;
+  /* Pane order is pure presentation, so it is applied HERE rather than in applyCfg —
+     setCfg is the one place every cfg write goes through, and a setting that only takes
+     effect when one particular caller remembers to ask is a setting that does not work. */
+  if (k==="graphFirst" && typeof document!=="undefined"){
+    document.body.classList.toggle("graph-first", !!v);
+    if (typeof gWake==="function") gWake();
+  }
+  return v; }
 function updateHud(){
   if (typeof document==="undefined") return;
   document.body.classList.toggle("hud-on", hudOn && graphMode!=="off");
@@ -6380,6 +6445,11 @@ function bindGraphPointer(cv, win){
       if (n){
         if (n.viewTo) setGraphView(n.viewTo);
         if (n.cmd){ await run(n.cmd); }
+      } else if (isPhone()){
+        /* A tap on empty space toggles the buttons. Guarded by gMoved, so a rotate or a
+           pinch never triggers it — the gesture has to have gone nowhere. That is the
+           whole reason this is safe as a single tap. */
+        setChrome("gbtns", document.body.classList.contains("gbtns-hide"));
       }
     }
     if (gOrbit && gDrag) recaptureOrbit(gDrag);
@@ -7356,6 +7426,7 @@ barr.addEventListener("click", async e=>{
   cmd.focus();
 });
 
+document.body.classList.toggle("graph-first", !!cfg("graphFirst"));
 initPhoneChrome();
 initKeyboardScroll();
 
