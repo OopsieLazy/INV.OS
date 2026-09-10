@@ -343,6 +343,10 @@ what is connected to what.
 drag to move**. One finger is taken by rotate — stealing it for panning would leave no way
 to turn a 3D graph at all.
 
+**Spin style** turns the idle drift into something with a vertical component: `tilted` is
+a gentle sway, `tumble` a proper two-axis roll, `wheel` a rolling sweep that speeds up as
+the camera crests. Level is the default and is exactly what it always was.
+
 **Double-tap** to hide and show the bars, and each half works on its own: double-tap the
 graph to put its buttons away, double-tap the terminal to put the top bar away. The HUD
 readout stays either way — without it you are looking at an unlabelled cloud of dots.
@@ -366,6 +370,8 @@ Low stock shows amber, so a project that cannot be built right now is visible at
 | orbit size | 1.00x | how wide the orbits are; below 1 pulls parts in |
 | spin resumes in | 4s | after a drag, when the rotation comes back (0 = never) |
 | after a drag | auto-home | `auto-home` levels the tilt · `follow the drag` keeps your direction |
+| spin style | level | how the idle drift moves: `level` · `tilted` · `tumble` · `wheel` |
+| graph position | below/right | which side of the terminal the graph sits on |
 | graph nodes | 20k | how many nodes to draw at most |
 | pause when idle | on | stop drawing when nothing moves (auto-orbit keeps it awake) |
 

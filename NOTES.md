@@ -3352,3 +3352,47 @@ commands is not a reset. The test caught exactly that: it drove the app through 
 the graph never came back.
 
 29 layout checks, 138 UI, 56 settings, 33 security, 24 demo.
+
+## v27.2 — a way back on the phone, and spins that go somewhere
+
+### Pressing the button you are on takes you back
+
+On a phone `theme`, `settings` and `help` fill the display and there was no way out short
+of typing — which is the one thing a phone is bad at. The bar now highlights the screen you
+are on, and pressing that button again goes home.
+
+The highlight is the point, not decoration: "press it again" is a rule nobody can follow if
+the button does not look pressed.
+
+`screenNow` is set by each screen and cleared in `exec()`, for the same reason the
+full-screen class is: `run()` is only the typed path, and menu clicks reach `exec` directly.
+
+### Spin styles
+
+Four, and `level` is still the default and still exactly what it was — yaw only.
+
+- **tilted** — a gentle vertical sway on top of the turn
+- **tumble** — a full two-axis roll
+- **wheel** — a rolling sweep where the yaw speeds up as the camera crests and slows at
+  the bottom, so the whole scene rolls rather than spinning flat
+
+The vertical part is a SINE between the pitch limits, not a rotation through them. Pitch
+is clamped at ±1.4 because past that the view goes edge-on and comes out upside down; a
+sweep rises, crests and falls without ever reaching it, so the clamp never has to be
+lifted and nothing outside `gDrift` changes. That was the constraint — a new spin must not
+touch the architecture — and it is why this is a sweep rather than a rotation.
+
+Yaw and the sweep run at rates that do not divide into each other, so the motion does not
+repeat on a short loop. The pitch target is eased rather than assigned, so changing style
+mid-spin slides into the new shape instead of snapping.
+
+The audit samples 90 frames of each style and checks two things: that it actually moves on
+two axes, and that it never reaches the clamp.
+
+### Roadmap D0
+
+Both remote-access options are recorded. Neither needs build work to be usable — both
+already work today — so D0 is only about making them one command instead of a page of
+instructions.
+
+64 settings checks, 138 UI, 29 layout, 24 demo.

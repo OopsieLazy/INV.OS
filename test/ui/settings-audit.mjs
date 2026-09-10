@@ -401,6 +401,46 @@ check('the drift rate is the same whichever axis it was left on',
 
 await run('cfgreset');
 
+// ── spin styles ─────────────────────────────────────────────────────────────
+/* Level is the original and stays the default: yaw only. The others add a vertical
+   sweep, so the scene turns in two directions at once. The sweep must never reach the
+   pitch clamp — past +-1.4 the view goes through edge-on and comes out upside down. */
+await run('graph off');
+await run('cfgreset');
+await run('graph inv');
+await run('graph 3d');
+await page.waitForTimeout(800);
+
+async function sample(style) {
+  return await page.evaluate(async s => {
+    setCfg('spinStyle', s);
+    gAutoRot = true; gHoming = false;
+    const yaw = [], pitch = [];
+    for (let i = 0; i < 90; i++) {
+      yaw.push(gYaw); pitch.push(gPitch);
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    const span = a => Math.max(...a) - Math.min(...a);
+    return { yaw: span(yaw), pitch: span(pitch),
+             maxPitch: Math.max(...pitch.map(Math.abs)) };
+  }, style);
+}
+
+const levelSpin = await sample(0);
+check('level spin turns on one axis only, as it always did',
+  levelSpin.yaw > 1e-4 && levelSpin.pitch < 1e-3,
+  `yaw ${levelSpin.yaw.toFixed(4)}, pitch ${levelSpin.pitch.toFixed(4)}`);
+
+for (const [name, style] of [['tilted', 1], ['tumble', 2], ['wheel', 3]]) {
+  const r = await sample(style);
+  check(`${name} spin turns in two directions at once`,
+    r.yaw > 1e-4 && r.pitch > 1e-3,
+    `yaw ${r.yaw.toFixed(4)}, pitch ${r.pitch.toFixed(4)}`);
+  check(`${name} spin never reaches the pitch limit`,
+    r.maxPitch < 1.4, `max |pitch| ${r.maxPitch.toFixed(3)}`);
+}
+await page.evaluate(() => setCfg('spinStyle', 0));
+
 // ── the camera must not lurch on its own ────────────────────────────────────
 /* Opening the 3D graph used to sit on the launch zoom for eight and a half seconds and
    then jump 2.3x wider in one frame, the instant the physics wound down. Nothing about

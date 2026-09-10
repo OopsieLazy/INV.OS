@@ -31,6 +31,9 @@ writes to the database, nothing gated. 100k items: search 2ms, home 0ms, flat me
 
 ### What is actually next, in order
 
+0. **Remote access** is written up in REMOTE.md and both options work today — Tailscale
+   for yourself, a Cloudflare Tunnel when somebody needs a URL. D0 below is only about
+   making them one command instead of a page of instructions.
 1. **Publish the demo.** RELEASE.md is the checklist. The only real work left is the
    landing page, a galaxy screenshot, and replacing `sourceURL` with the real repo.
    Everything in this roadmap about what shops need is a hypothesis until a stranger
@@ -179,6 +182,28 @@ Note: true multi-device usefulness needs Phase D.
 ═══════════════════════════════════════════════════════════════
 ## PHASE D — multi-station (when the user runs a server; they said "later")
 ═══════════════════════════════════════════════════════════════
+
+### D0 — reaching the station from outside the shop  (added 2026-09-09)
+Written up in REMOTE.md; this is the build work that would make it one-command instead of
+a page of instructions. Not urgent — both options already WORK today, this is only about
+making them easy.
+
+- [ ] **Tailscale** is the recommendation and needs nothing from us. Already unblocked:
+      `100.64.0.0/10` counts as local, so a mesh client is not refused by the
+      internet guard (v26.9 — it was, and that would have blocked the whole approach).
+      - [ ] `invos -remote` could print the tailscale name and QR instead of the LAN IP,
+            so the address you hand a phone is the one that works from anywhere
+      - [ ] the kiosk installer could offer to install and enable tailscaled alongside
+- [ ] **Cloudflare Tunnel**, for handing somebody a plain URL with no client to install.
+      Also already possible; `-require-key` (v26.9) closes the hole where every tunnel
+      visitor arrives as loopback and inherits the console's exemption.
+      - [ ] a `tunnel` command that checks whether `cloudflared` is installed, whether a
+            tunnel is running, and whether Access is actually in front of it — the last
+            one is the mistake people make, and it is silent
+      - [ ] refuse to start a tunnel without `-require-key`, the same way the binary
+            already refuses `-require-key` without a key
+- [ ] whichever is used, `server` should say plainly HOW this station is reachable right
+      now — local only, shop LAN, mesh, or public — rather than making someone infer it
 
 ### D1 — R8 Multi-user / shared data  [~ POC done]
 - [x] local-first adapter + Go/SQLite server + physical .db mirror (all verified)
